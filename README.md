@@ -1,19 +1,24 @@
 # DaBom
 
-**버전 0.0.3** — Windows 네이티브 **C (Win32 + WIC)** 데스크톱 사진 뷰어입니다.  
+**버전 0.0.4** — Windows 네이티브 **C (Win32 + WIC)** 데스크톱 사진 뷰어입니다.  
 이전 Electron/Vite/React 구현은 이 C 앱으로 대체되었습니다.
 
-앱 버전은 `src/dabom.h`의 `DABOM_VERSION`이 단일 기준이며, 창 제목·빈 화면 부제에 `DaBom 0.0.3`로 표시됩니다.
+앱 버전은 `src/dabom.h`의 `DABOM_VERSION`이 단일 기준이며, 창 제목·빈 화면 부제에 `DaBom 0.0.4`로 표시됩니다.
+
+### 0.0.4 포함
+
+- **윈도우 프레임 메뉴바** (`SetMenu` / `HMENU`) — 클라이언트 영역 커스텀 툴바 제거
+- 이미지 `StretchBlt`가 메뉴를 덮을 수 없음 (메뉴는 non-client)
+- 상단: **파일** 팝업 + flat 항목(이전·다음·축소·확대·맞춤·원본크기·슬라이드쇼)
+- **파일** 팝업: owner-draw Apps 라이트/다크 테마 유지
 
 ### 0.0.3 포함
 
 - 마우스 휠로 전체 보기 이전·다음
 - **원본크기**(1:1) 맞춤
-- 메뉴 크롬·상태줄 개편 (상단 메뉴 스트립 + 이미지 상태바)
+- 메뉴 크롬·상태줄 개편
 - Windows 시스템 UI 글꼴(Explorer와 동일 NONCLIENTMETRICS) 사용
 - Windows 앱 모드 다크/라이트 테마 연동
-- 상단 액션 스트립: 커스텀 페인트 플랫 라벨(**파일** 드롭다운 + 이전|다음|축소|확대|맞춤|원본크기|슬라이드쇼, 세로 구분선; Win32 BUTTON 크롬 없음)
-- **파일** 팝업: owner-draw `TrackPopupMenu` — Apps 라이트(흰 배경·검정 글자) / 다크(`#2D2D2D`·흰 글자), 단축키 우측 정렬 (테마 연동)
 - 하단 상태줄: 파일명·인덱스 + 해상도·형식·크기·수정 시각
 
 ## 요구 사항
@@ -53,7 +58,7 @@ build\dabom.exe
 ## 기능 (MVP)
 
 1. **파일** 메뉴 — 폴더 열기 / 파일 열기(다중) / 파일 정보 / 프로그램 정보 / 종료
-2. 상단 가로 액션: 이전 | 다음 | 축소 | 확대 | 맞춤 | 원본크기 | 슬라이드쇼
+2. 창 프레임 메뉴바 액션: 이전 | 다음 | 축소 | 확대 | 맞춤 | 원본크기 | 슬라이드쇼
 3. 썸네일 그리드 · 전체 보기(←→↑↓, Esc로 그리드)
 4. 확대·축소(`+`/`-`), **맞춤**(0), **원본크기**(1), 드래그 팬
 5. 하단 상태줄 — 왼쪽 `파일명 (n / total)`, 오른쪽 `날짜 시각  WxH(형식)  크기`
@@ -67,14 +72,15 @@ build\dabom.exe
 - 감지: 레지스트리 `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`의 `AppsUseLightTheme` (0=다크, 1=라이트). 가능하면 `uxtheme.dll`의 `ShouldAppsUseDarkMode`도 사용합니다.
 - 라이브 갱신: `WM_SETTINGCHANGE` (`ImmersiveColorSet`) 및 `WM_THEMECHANGED`에서 브러시·색을 다시 만들고 `InvalidateRect`합니다.
 - 선택: 다크 모드에서 `DwmSetWindowAttribute` immersive dark (제목 표시줄).
+- 시스템 메뉴바는 Windows 테마를 따르고, **파일** 팝업만 Apps 라이트/다크 owner-draw를 유지합니다.
 
 ### UI 글꼴 (Windows 시스템)
 
 Explorer와 같은 밀도를 맞추기 위해 `SystemParametersInfo(SPI_GETNONCLIENTMETRICS)`로 시스템 글꼴을 읽습니다.
 
-- 툴바·썸네일 라벨: `lfMessageFont`
+- 썸네일 라벨: `lfMessageFont`
 - 상태줄: `lfStatusFont`
-- 팝업 메뉴: owner-draw `TrackPopupMenu` + `lfMessageFont`(Apps 라이트/다크 배경·글자)
+- 파일 팝업: owner-draw + `lfMessageFont`(Apps 라이트/다크 배경·글자)
 - 브랜드 히로: 메시지 글꼴 높이의 약 3.5배
 - `WM_SETTINGCHANGE` 시 글꼴을 다시 만들어 적용합니다.
 - 독립 pt 오버라이드/`settings.ini`의 `ui_font_size_pt`는 없습니다.

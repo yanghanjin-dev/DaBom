@@ -41,17 +41,15 @@
 #endif
 
 /* Single source of truth for app version (keep DABOM_VERSION_W in sync). */
-#define DABOM_VERSION   "0.0.3"
-#define DABOM_VERSION_W L"0.0.3"
+#define DABOM_VERSION   "0.0.4"
+#define DABOM_VERSION_W L"0.0.4"
 #define DABOM_TITLE_W   L"DaBom " DABOM_VERSION_W
 
 #define DABOM_MAX_PATH 1024
 #define DABOM_MAX_FILES 8192
 #define DABOM_THUMB 160
 #define DABOM_THUMB_PAD 12
-#define DABOM_TOOLBAR_H 40
 #define DABOM_STATUS_H 28
-#define DABOM_TB_MAX 16
 #define DABOM_SLIDE_MS 3000
 #define DABOM_ZOOM_MIN 0.1
 #define DABOM_ZOOM_MAX 8.0
@@ -60,9 +58,8 @@
 #define DABOM_BRAND_FONT_PT_DIV  2
 
 enum {
-    /* Top strip: dropdown triggers + horizontal actions */
-    ID_BTN_FILE = 1001,
-    ID_BTN_PREV,
+    /* Menubar command ids (flat top-level items) */
+    ID_BTN_PREV = 1002,
     ID_BTN_NEXT,
     ID_BTN_ZOOM_OUT,
     ID_BTN_ZOOM_IN,
@@ -106,10 +103,12 @@ typedef struct {
 
 typedef struct {
     HWND hwnd;
-    HWND toolbar;     /* unused (custom-drawn strip); kept for ABI clarity */
+    HMENU hmenu;      /* Win32 non-client menubar (SetMenu) */
+    HMENU menu_file;  /* 파일 popup (owner-draw, Apps theme) */
+    HBRUSH br_menu;   /* 파일 popup MIM_BACKGROUND brush */
     HWND status;      /* left: filename + index */
     HWND status_meta; /* right: dimensions / format / size / date */
-    HFONT font_ui;    /* lfMessageFont — labels, thumbs, toolbar */
+    HFONT font_ui;    /* lfMessageFont — labels, thumbs */
     HFONT font_status;/* lfStatusFont — status bar */
     HFONT font_brand;
     HFONT font_btn;   /* lfMessageFont — kept for theme/font rebuild */
@@ -117,14 +116,6 @@ typedef struct {
     IWICImagingFactory *wic;
 
     DabomPalette palette;
-
-    /* Custom-drawn top strip (flat labels; no BUTTON chrome). */
-    RECT tb_rc[DABOM_TB_MAX];
-    int tb_id[DABOM_TB_MAX];
-    int tb_enabled[DABOM_TB_MAX];
-    int tb_count;
-    int tb_hover;     /* -1 = none */
-    int tb_tracking;  /* TrackMouseEvent active */
 
     ImageEntry *files;
     int file_count;
