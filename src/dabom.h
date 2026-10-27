@@ -62,17 +62,25 @@
 #define DABOM_BRAND_FONT_PT_DIV  2
 
 enum {
-    ID_BTN_FOLDER = 1001,
-    ID_BTN_FILES,
+    /* Top strip: dropdown triggers + horizontal actions */
+    ID_BTN_FILE = 1001,
+    ID_BTN_FONTSIZE,
     ID_BTN_PREV,
     ID_BTN_NEXT,
-    ID_BTN_ZOOM_IN,
     ID_BTN_ZOOM_OUT,
+    ID_BTN_ZOOM_IN,
     ID_BTN_FIT,
     ID_BTN_ACTUAL,
     ID_BTN_SLIDE,
-    ID_BTN_FONT_DEC,
-    ID_BTN_FONT_INC,
+    /* 파일 popup */
+    ID_MENU_OPEN_FOLDER = 1101,
+    ID_MENU_OPEN_FILES,
+    ID_MENU_FILE_INFO,
+    ID_MENU_ABOUT,
+    ID_MENU_EXIT,
+    /* 글자크기 popup */
+    ID_MENU_FONT_INC = 1121,
+    ID_MENU_FONT_DEC,
     ID_TIMER_SLIDE = 2001
 };
 
@@ -105,7 +113,8 @@ typedef struct {
 typedef struct {
     HWND hwnd;
     HWND toolbar;
-    HWND status;
+    HWND status;      /* left: filename + index */
+    HWND status_meta; /* right: dimensions / format / size / date */
     HFONT font_ui;
     HFONT font_brand;
     HFONT font_btn;

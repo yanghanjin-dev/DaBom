@@ -109,15 +109,25 @@ void dabom_theme_apply(AppState *app, int force)
         InvalidateRect(app->hwnd, NULL, TRUE);
         if (app->status)
             InvalidateRect(app->status, NULL, TRUE);
+        if (app->status_meta)
+            InvalidateRect(app->status_meta, NULL, TRUE);
     }
 }
 
 static void layout_children(AppState *app)
 {
     RECT rc;
+    int mid;
     GetClientRect(app->hwnd, &rc);
+    mid = rc.right / 2;
+    if (mid < 160)
+        mid = rc.right > 0 ? rc.right : 0;
     if (app->status)
-        MoveWindow(app->status, 0, rc.bottom - DABOM_STATUS_H, rc.right, DABOM_STATUS_H, TRUE);
+        MoveWindow(app->status, 8, rc.bottom - DABOM_STATUS_H,
+            mid > 8 ? mid - 8 : 0, DABOM_STATUS_H, TRUE);
+    if (app->status_meta)
+        MoveWindow(app->status_meta, mid, rc.bottom - DABOM_STATUS_H,
+            rc.right > mid + 8 ? rc.right - mid - 8 : 0, DABOM_STATUS_H, TRUE);
 }
 
 void dabom_set_status(AppState *app, const wchar_t *text)
@@ -126,39 +136,137 @@ void dabom_set_status(AppState *app, const wchar_t *text)
         SetWindowTextW(app->status, text ? text : L"");
 }
 
+static void dabom_set_status_meta(AppState *app, const wchar_t *text)
+{
+    if (app->status_meta)
+        SetWindowTextW(app->status_meta, text ? text : L"");
+}
+
+static const wchar_t *format_from_path(const wchar_t *path)
+{
+    const wchar_t *ext = wcsrchr(path, L'.');
+    if (!ext || !ext[1])
+        return L"Image";
+    if (_wcsicmp(ext, L".jpg") == 0 || _wcsicmp(ext, L".jpeg") == 0)
+        return L"Jpeg";
+    if (_wcsicmp(ext, L".png") == 0)
+        return L"Png";
+    if (_wcsicmp(ext, L".gif") == 0)
+        return L"Gif";
+    if (_wcsicmp(ext, L".webp") == 0)
+        return L"Webp";
+    if (_wcsicmp(ext, L".bmp") == 0)
+        return L"Bmp";
+    return ext + 1;
+}
+
+static void format_file_size(ULONGLONG bytes, wchar_t *out, int cch)
+{
+    if (bytes < 1024ULL)
+        _snwprintf(out, cch, L"%lluB", (unsigned long long)bytes);
+    else if (bytes < 1024ULL * 1024ULL)
+        _snwprintf(out, cch, L"%.1fKB", (double)bytes / 1024.0);
+    else
+        _snwprintf(out, cch, L"%.1fMB", (double)bytes / (1024.0 * 1024.0));
+    out[cch - 1] = 0;
+}
+
+/* Build "YYYY/MM/DD HH:MM:SS WxH(Format) size" for current image; empty if unavailable. */
+static void build_image_meta(AppState *app, const wchar_t *path, wchar_t *out, int cch)
+{
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    SYSTEMTIME st, local;
+    FILETIME local_ft;
+    wchar_t size_buf[32];
+    const wchar_t *fmt;
+    UINT w = app->full_w;
+    UINT h = app->full_h;
+
+    out[0] = 0;
+    if (!path || !path[0])
+        return;
+
+    fmt = format_from_path(path);
+    size_buf[0] = 0;
+    if (GetFileAttributesExW(path, GetFileExInfoStandard, &fad)) {
+        ULARGE_INTEGER ul;
+        ul.LowPart = fad.nFileSizeLow;
+        ul.HighPart = fad.nFileSizeHigh;
+        format_file_size(ul.QuadPart, size_buf, 32);
+        if (FileTimeToLocalFileTime(&fad.ftLastWriteTime, &local_ft) &&
+            FileTimeToSystemTime(&local_ft, &st)) {
+            local = st;
+            if (w > 0 && h > 0 && size_buf[0]) {
+                _snwprintf(out, cch,
+                    L"%04u/%02u/%02u %02u:%02u:%02u  %ux%u(%s)  %s",
+                    local.wYear, local.wMonth, local.wDay,
+                    local.wHour, local.wMinute, local.wSecond,
+                    w, h, fmt, size_buf);
+            } else if (size_buf[0]) {
+                _snwprintf(out, cch,
+                    L"%04u/%02u/%02u %02u:%02u:%02u  %s  %s",
+                    local.wYear, local.wMonth, local.wDay,
+                    local.wHour, local.wMinute, local.wSecond,
+                    fmt, size_buf);
+            }
+            out[cch - 1] = 0;
+            return;
+        }
+    }
+    if (w > 0 && h > 0) {
+        if (size_buf[0])
+            _snwprintf(out, cch, L"%ux%u(%s)  %s", w, h, fmt, size_buf);
+        else
+            _snwprintf(out, cch, L"%ux%u(%s)", w, h, fmt);
+        out[cch - 1] = 0;
+    }
+}
+
 void dabom_update_chrome(AppState *app)
 {
-    wchar_t buf[DABOM_MAX_PATH + 64];
+    wchar_t left[DABOM_MAX_PATH + 64];
+    wchar_t meta[256];
+    wchar_t title[DABOM_MAX_PATH + 80];
     int enable = app->file_count > 0;
 
-    EnableWindow(GetDlgItem(app->toolbar, ID_BTN_PREV), enable);
-    EnableWindow(GetDlgItem(app->toolbar, ID_BTN_NEXT), enable);
-    EnableWindow(GetDlgItem(app->toolbar, ID_BTN_ZOOM_IN), app->mode == VIEW_FULL);
-    EnableWindow(GetDlgItem(app->toolbar, ID_BTN_ZOOM_OUT), app->mode == VIEW_FULL);
-    EnableWindow(GetDlgItem(app->toolbar, ID_BTN_FIT), app->mode == VIEW_FULL);
-    EnableWindow(GetDlgItem(app->toolbar, ID_BTN_ACTUAL), app->mode == VIEW_FULL);
-    EnableWindow(GetDlgItem(app->toolbar, ID_BTN_SLIDE), enable);
-    SetWindowTextW(GetDlgItem(app->toolbar, ID_BTN_SLIDE),
+    EnableWindow(GetDlgItem(app->hwnd, ID_BTN_PREV), enable);
+    EnableWindow(GetDlgItem(app->hwnd, ID_BTN_NEXT), enable);
+    EnableWindow(GetDlgItem(app->hwnd, ID_BTN_ZOOM_IN), app->mode == VIEW_FULL);
+    EnableWindow(GetDlgItem(app->hwnd, ID_BTN_ZOOM_OUT), app->mode == VIEW_FULL);
+    EnableWindow(GetDlgItem(app->hwnd, ID_BTN_FIT), app->mode == VIEW_FULL);
+    EnableWindow(GetDlgItem(app->hwnd, ID_BTN_ACTUAL), app->mode == VIEW_FULL);
+    EnableWindow(GetDlgItem(app->hwnd, ID_BTN_SLIDE), enable);
+    SetWindowTextW(GetDlgItem(app->hwnd, ID_BTN_SLIDE),
         app->slideshow ? L"슬라이드 중지" : L"슬라이드쇼");
 
+    left[0] = 0;
+    meta[0] = 0;
+    title[0] = 0;
+
     if (app->mode == VIEW_EMPTY || app->file_count == 0) {
-        dabom_set_status(app, L"폴더 또는 이미지를 열어 DaBom으로 사진을 보세요");
+        /* Empty status when no image loaded (reference chrome). */
         SetWindowTextW(app->hwnd, DABOM_TITLE_W);
     } else if (app->mode == VIEW_FULL && app->current >= 0 && app->current < app->file_count) {
-        const wchar_t *name = wcsrchr(app->files[app->current].path, L'\\');
-        name = name ? name + 1 : app->files[app->current].path;
-        _snwprintf(buf, DABOM_MAX_PATH + 64, L"%s  (%d / %d)%s",
+        const wchar_t *path = app->files[app->current].path;
+        const wchar_t *name = wcsrchr(path, L'\\');
+        name = name ? name + 1 : path;
+        _snwprintf(left, DABOM_MAX_PATH + 64, L"%s  (%d / %d)%s",
             name, app->current + 1, app->file_count,
             app->slideshow ? L"  · 슬라이드쇼" : L"");
-        buf[DABOM_MAX_PATH + 63] = 0;
-        dabom_set_status(app, buf);
-        SetWindowTextW(app->hwnd, buf);
+        left[DABOM_MAX_PATH + 63] = 0;
+        build_image_meta(app, path, meta, 256);
+        _snwprintf(title, DABOM_MAX_PATH + 80, L"DaBom - %s (%d / %d)",
+            name, app->current + 1, app->file_count);
+        title[DABOM_MAX_PATH + 79] = 0;
+        SetWindowTextW(app->hwnd, title);
     } else {
-        _snwprintf(buf, DABOM_MAX_PATH + 64, L"DaBom — 이미지 %d장", app->file_count);
-        buf[DABOM_MAX_PATH + 63] = 0;
-        dabom_set_status(app, buf);
+        _snwprintf(left, DABOM_MAX_PATH + 64, L"이미지 %d장", app->file_count);
+        left[DABOM_MAX_PATH + 63] = 0;
         SetWindowTextW(app->hwnd, DABOM_TITLE_W);
     }
+
+    dabom_set_status(app, left);
+    dabom_set_status_meta(app, meta);
 }
 
 void dabom_set_mode(AppState *app, ViewMode mode)
@@ -607,33 +715,140 @@ static int hit_grid_index(AppState *app, int mx, int my)
     return idx;
 }
 
+static HWND create_strip_btn(AppState *app, int id, const wchar_t *label, int x, int w)
+{
+    HWND btn = CreateWindowExW(0, L"BUTTON", label,
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_FLAT,
+        x, 8, w, 30, app->hwnd, (HMENU)(INT_PTR)id,
+        GetModuleHandleW(NULL), NULL);
+    SendMessageW(btn, WM_SETFONT, (WPARAM)app->font_btn, TRUE);
+    return btn;
+}
+
+static HWND create_strip_sep(AppState *app, int x)
+{
+    HWND sep = CreateWindowExW(0, L"STATIC", L"|",
+        WS_CHILD | WS_VISIBLE | SS_CENTER,
+        x, 10, 10, 26, app->hwnd, NULL, GetModuleHandleW(NULL), NULL);
+    SendMessageW(sep, WM_SETFONT, (WPARAM)app->font_ui, TRUE);
+    return sep;
+}
+
+/* Reference-style top strip: 파일 | 글자크기 | 이전 | … | 슬라이드쇼 */
 static void create_toolbar(AppState *app)
 {
     int i;
-    struct { int id; const wchar_t *label; int w; } buttons[] = {
-        { ID_BTN_FOLDER,   L"폴더 열기", 90 },
-        { ID_BTN_FILES,    L"파일 열기", 90 },
-        { ID_BTN_PREV,     L"이전", 64 },
-        { ID_BTN_NEXT,     L"다음", 64 },
-        { ID_BTN_ZOOM_OUT, L"축소", 56 },
-        { ID_BTN_ZOOM_IN,  L"확대", 56 },
-        { ID_BTN_FIT,      L"맞춤", 56 },
-        { ID_BTN_ACTUAL,   L"원본크기", 80 },
-        { ID_BTN_SLIDE,    L"슬라이드쇼", 100 },
-        { ID_BTN_FONT_DEC, L"글자-", 52 },
-        { ID_BTN_FONT_INC, L"글자+", 52 },
+    int x = 8;
+    struct { int id; const wchar_t *label; int w; } items[] = {
+        { ID_BTN_FILE,     L"파일", 56 },
+        { ID_BTN_FONTSIZE, L"글자크기", 72 },
+        { ID_BTN_PREV,     L"이전", 52 },
+        { ID_BTN_NEXT,     L"다음", 52 },
+        { ID_BTN_ZOOM_OUT, L"축소", 48 },
+        { ID_BTN_ZOOM_IN,  L"확대", 48 },
+        { ID_BTN_FIT,      L"맞춤", 48 },
+        { ID_BTN_ACTUAL,   L"원본크기", 72 },
+        { ID_BTN_SLIDE,    L"슬라이드쇼", 88 },
     };
-    int x = 10;
-    app->toolbar = app->hwnd; /* buttons are direct children; used with GetDlgItem */
+    app->toolbar = app->hwnd;
 
-    for (i = 0; i < (int)(sizeof(buttons) / sizeof(buttons[0])); i++) {
-        HWND btn = CreateWindowExW(0, L"BUTTON", buttons[i].label,
-            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            x, 10, buttons[i].w, 28, app->hwnd, (HMENU)(INT_PTR)buttons[i].id,
-            GetModuleHandleW(NULL), NULL);
-        SendMessageW(btn, WM_SETFONT, (WPARAM)app->font_btn, TRUE);
-        x += buttons[i].w + 6;
+    for (i = 0; i < (int)(sizeof(items) / sizeof(items[0])); i++) {
+        if (i > 0) {
+            create_strip_sep(app, x);
+            x += 12;
+        }
+        create_strip_btn(app, items[i].id, items[i].label, x, items[i].w);
+        x += items[i].w + 2;
     }
+}
+
+static void popup_file_menu(AppState *app, HWND anchor)
+{
+    HMENU menu;
+    RECT rc;
+    POINT pt;
+    int cmd;
+
+    menu = CreatePopupMenu();
+    if (!menu)
+        return;
+    AppendMenuW(menu, MF_STRING, ID_MENU_OPEN_FOLDER, L"폴더 열기");
+    AppendMenuW(menu, MF_STRING, ID_MENU_OPEN_FILES, L"파일 열기");
+    AppendMenuW(menu, MF_STRING, ID_MENU_FILE_INFO, L"파일 정보");
+    AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(menu, MF_STRING, ID_MENU_ABOUT, L"프로그램 정보\tF1");
+    AppendMenuW(menu, MF_STRING, ID_MENU_EXIT, L"종료\tX");
+
+    GetWindowRect(anchor, &rc);
+    pt.x = rc.left;
+    pt.y = rc.bottom;
+    cmd = TrackPopupMenu(menu,
+        TPM_LEFTALIGN | TPM_TOPALIGN | TPM_LEFTBUTTON | TPM_RETURNCMD,
+        pt.x, pt.y, 0, app->hwnd, NULL);
+    DestroyMenu(menu);
+    if (cmd)
+        SendMessageW(app->hwnd, WM_COMMAND, MAKEWPARAM(cmd, 0), 0);
+}
+
+static void popup_font_menu(AppState *app, HWND anchor)
+{
+    HMENU menu;
+    RECT rc;
+    POINT pt;
+    int cmd;
+
+    menu = CreatePopupMenu();
+    if (!menu)
+        return;
+    AppendMenuW(menu, MF_STRING, ID_MENU_FONT_INC, L"글자 크게(+)");
+    AppendMenuW(menu, MF_STRING, ID_MENU_FONT_DEC, L"글자 작게(-)");
+
+    GetWindowRect(anchor, &rc);
+    pt.x = rc.left;
+    pt.y = rc.bottom;
+    cmd = TrackPopupMenu(menu,
+        TPM_LEFTALIGN | TPM_TOPALIGN | TPM_LEFTBUTTON | TPM_RETURNCMD,
+        pt.x, pt.y, 0, app->hwnd, NULL);
+    DestroyMenu(menu);
+    if (cmd)
+        SendMessageW(app->hwnd, WM_COMMAND, MAKEWPARAM(cmd, 0), 0);
+}
+
+static void show_about(AppState *app)
+{
+    wchar_t buf[256];
+    _snwprintf(buf, 256,
+        L"DaBom %s\n\nWindows 네이티브 사진 뷰어\nWin32 + WIC",
+        DABOM_VERSION_W);
+    buf[255] = 0;
+    MessageBoxW(app->hwnd, buf, L"프로그램 정보", MB_OK | MB_ICONINFORMATION);
+}
+
+static void show_file_info(AppState *app)
+{
+    wchar_t meta[256];
+    wchar_t buf[DABOM_MAX_PATH + 320];
+    const wchar_t *path;
+    const wchar_t *name;
+
+    if (app->file_count <= 0 || app->current < 0 || app->current >= app->file_count) {
+        MessageBoxW(app->hwnd, L"열린 이미지가 없습니다.", L"파일 정보",
+            MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    path = app->files[app->current].path;
+    name = wcsrchr(path, L'\\');
+    name = name ? name + 1 : path;
+    if (app->mode != VIEW_FULL || !app->full_bmp)
+        dabom_load_current_full(app);
+    build_image_meta(app, path, meta, 256);
+    _snwprintf(buf, DABOM_MAX_PATH + 320,
+        L"%s\n(%d / %d)\n\n%s\n\n%s",
+        name, app->current + 1, app->file_count,
+        meta[0] ? meta : L"(메타데이터 없음)",
+        path);
+    buf[DABOM_MAX_PATH + 319] = 0;
+    MessageBoxW(app->hwnd, buf, L"파일 정보", MB_OK | MB_ICONINFORMATION);
 }
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -646,9 +861,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         dabom_theme_apply(app, 1);
         create_toolbar(app);
         app->status = CreateWindowExW(0, L"STATIC", L"",
-            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE,
+            0, 0, 100, DABOM_STATUS_H, hwnd, NULL, GetModuleHandleW(NULL), NULL);
+        app->status_meta = CreateWindowExW(0, L"STATIC", L"",
+            WS_CHILD | WS_VISIBLE | SS_RIGHT | SS_CENTERIMAGE,
             0, 0, 100, DABOM_STATUS_H, hwnd, NULL, GetModuleHandleW(NULL), NULL);
         SendMessageW(app->status, WM_SETFONT, (WPARAM)app->font_ui, TRUE);
+        SendMessageW(app->status_meta, WM_SETFONT, (WPARAM)app->font_ui, TRUE);
         layout_children(app);
         dabom_update_chrome(app);
         return 0;
@@ -677,8 +896,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
-        case ID_BTN_FOLDER: dabom_open_folder_dialog(app); break;
-        case ID_BTN_FILES:  dabom_open_files_dialog(app); break;
+        case ID_BTN_FILE:
+            popup_file_menu(app, (HWND)lParam ? (HWND)lParam : GetDlgItem(hwnd, ID_BTN_FILE));
+            break;
+        case ID_BTN_FONTSIZE:
+            popup_font_menu(app, (HWND)lParam ? (HWND)lParam : GetDlgItem(hwnd, ID_BTN_FONTSIZE));
+            break;
+        case ID_MENU_OPEN_FOLDER: dabom_open_folder_dialog(app); break;
+        case ID_MENU_OPEN_FILES:  dabom_open_files_dialog(app); break;
+        case ID_MENU_FILE_INFO:   show_file_info(app); break;
+        case ID_MENU_ABOUT:       show_about(app); break;
+        case ID_MENU_EXIT:        DestroyWindow(hwnd); break;
+        case ID_MENU_FONT_INC:    dabom_set_ui_font_pt(app, app->ui_font_size_pt + 1); break;
+        case ID_MENU_FONT_DEC:    dabom_set_ui_font_pt(app, app->ui_font_size_pt - 1); break;
         case ID_BTN_PREV:   dabom_next(app, -1); break;
         case ID_BTN_NEXT:   dabom_next(app, 1); break;
         case ID_BTN_ZOOM_IN:  dabom_zoom_by(app, 1.25); break;
@@ -686,8 +916,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         case ID_BTN_FIT:    dabom_fit(app); break;
         case ID_BTN_ACTUAL: dabom_actual_size(app); break;
         case ID_BTN_SLIDE:  dabom_toggle_slideshow(app); break;
-        case ID_BTN_FONT_DEC: dabom_set_ui_font_pt(app, app->ui_font_size_pt - 1); break;
-        case ID_BTN_FONT_INC: dabom_set_ui_font_pt(app, app->ui_font_size_pt + 1); break;
         }
         return 0;
 
@@ -725,6 +953,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         case 'O':
             if (GetKeyState(VK_CONTROL) < 0)
                 dabom_open_folder_dialog(app);
+            break;
+        case VK_F1:
+            show_about(app);
+            break;
+        case 'X':
+        case 'x':
+            if (GetKeyState(VK_CONTROL) >= 0 && GetKeyState(VK_MENU) >= 0)
+                DestroyWindow(hwnd);
+            break;
+        case VK_TAB:
+            show_file_info(app);
             break;
         }
         return 0;
@@ -792,7 +1031,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             dabom_next(app, 1);
         return 0;
 
-    case WM_CTLCOLORSTATIC: {
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLORBTN: {
         HDC hdc = (HDC)wParam;
         SetTextColor(hdc, app->palette.text);
         SetBkColor(hdc, app->palette.surface);
@@ -878,9 +1118,9 @@ void dabom_create_fonts(AppState *app)
 void dabom_apply_fonts(AppState *app)
 {
     static const int btn_ids[] = {
-        ID_BTN_FOLDER, ID_BTN_FILES, ID_BTN_PREV, ID_BTN_NEXT,
+        ID_BTN_FILE, ID_BTN_FONTSIZE, ID_BTN_PREV, ID_BTN_NEXT,
         ID_BTN_ZOOM_OUT, ID_BTN_ZOOM_IN, ID_BTN_FIT, ID_BTN_ACTUAL,
-        ID_BTN_SLIDE, ID_BTN_FONT_DEC, ID_BTN_FONT_INC
+        ID_BTN_SLIDE
     };
     int i;
 
@@ -893,6 +1133,8 @@ void dabom_apply_fonts(AppState *app)
     }
     if (app->status)
         SendMessageW(app->status, WM_SETFONT, (WPARAM)app->font_ui, TRUE);
+    if (app->status_meta)
+        SendMessageW(app->status_meta, WM_SETFONT, (WPARAM)app->font_ui, TRUE);
     InvalidateRect(app->hwnd, NULL, TRUE);
 }
 
@@ -908,12 +1150,7 @@ void dabom_set_ui_font_pt(AppState *app, int pt)
     dabom_create_fonts(app);
     dabom_apply_fonts(app);
     dabom_save_settings(app);
-    {
-        wchar_t buf[64];
-        _snwprintf(buf, 64, L"UI 글자크기 %d pt", app->ui_font_size_pt);
-        buf[63] = 0;
-        dabom_set_status(app, buf);
-    }
+    dabom_update_chrome(app);
 }
 
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmd, int show)
