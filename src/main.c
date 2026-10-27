@@ -1,5 +1,6 @@
 #include "dabom.h"
 #include <dwmapi.h>
+#include <uxtheme.h>
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -12,6 +13,7 @@
 static AppState g_app;
 
 static void dabom_update_menubar(AppState *app);
+static void get_content_rect(AppState *app, RECT *rc);
 
 /* ---- Windows Apps theme (HKCU Personalize / ShouldAppsUseDarkMode) ---- */
 
@@ -124,43 +126,110 @@ void dabom_theme_apply(AppState *app, int force)
         SetMenuInfo(app->menu_file, &mi);
     }
 
+    if (app->status) {
+        /* Disable visual styles so SB_SETBKCOLOR + owner-draw Apps colors stick. */
+        SetWindowTheme(app->status, L"", L"");
+        SendMessageW(app->status, SB_SETBKCOLOR, 0, (LPARAM)app->palette.surface);
+        InvalidateRect(app->status, NULL, TRUE);
+    }
+
     if (app->hwnd) {
         InvalidateRect(app->hwnd, NULL, TRUE);
-        if (app->status)
-            InvalidateRect(app->status, NULL, TRUE);
-        if (app->status_meta)
-            InvalidateRect(app->status_meta, NULL, TRUE);
         if (app->hmenu)
             DrawMenuBar(app->hwnd);
     }
 }
 
-static void layout_children(AppState *app)
+static int status_bar_height(AppState *app)
 {
     RECT rc;
+    if (!app->status)
+        return 0;
+    GetWindowRect(app->status, &rc);
+    return rc.bottom - rc.top;
+}
+
+/* Dock status bar, then split parts: left filename/index, right meta. */
+static void layout_statusbar(AppState *app)
+{
+    RECT rc;
+    int parts[2];
     int mid;
+
+    if (!app->status || !app->hwnd)
+        return;
+
     GetClientRect(app->hwnd, &rc);
+    SendMessageW(app->status, WM_SIZE, 0, 0);
+
     mid = rc.right / 2;
     if (mid < 160)
         mid = rc.right > 0 ? rc.right : 0;
-    if (app->status)
-        MoveWindow(app->status, 8, rc.bottom - DABOM_STATUS_H,
-            mid > 8 ? mid - 8 : 0, DABOM_STATUS_H, TRUE);
-    if (app->status_meta)
-        MoveWindow(app->status_meta, mid, rc.bottom - DABOM_STATUS_H,
-            rc.right > mid + 8 ? rc.right - mid - 8 : 0, DABOM_STATUS_H, TRUE);
+    parts[0] = mid;
+    parts[1] = -1;
+    SendMessageW(app->status, SB_SETPARTS, 2, (LPARAM)parts);
+}
+
+static void status_refresh_texts(AppState *app)
+{
+    if (!app->status)
+        return;
+    /* SBT_OWNERDRAW: parent paints with Apps palette text/bg. */
+    SendMessageW(app->status, SB_SETTEXTW, 0 | SBT_OWNERDRAW,
+        (LPARAM)app->status_left);
+    SendMessageW(app->status, SB_SETTEXTW, 1 | SBT_OWNERDRAW,
+        (LPARAM)app->status_right);
 }
 
 void dabom_set_status(AppState *app, const wchar_t *text)
 {
-    if (app->status)
-        SetWindowTextW(app->status, text ? text : L"");
+    if (text)
+        wcsncpy(app->status_left, text, DABOM_MAX_PATH + 63);
+    else
+        app->status_left[0] = 0;
+    app->status_left[DABOM_MAX_PATH + 63] = 0;
+    status_refresh_texts(app);
 }
 
 static void dabom_set_status_meta(AppState *app, const wchar_t *text)
 {
-    if (app->status_meta)
-        SetWindowTextW(app->status_meta, text ? text : L"");
+    if (text)
+        wcsncpy(app->status_right, text, 255);
+    else
+        app->status_right[0] = 0;
+    app->status_right[255] = 0;
+    status_refresh_texts(app);
+}
+
+static void draw_status_part(AppState *app, const DRAWITEMSTRUCT *dis)
+{
+    const wchar_t *text;
+    UINT align;
+    RECT r;
+    HBRUSH br;
+
+    if (!dis || !app)
+        return;
+
+    text = (dis->itemID == 0) ? app->status_left : app->status_right;
+    align = (dis->itemID == 0)
+        ? (DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS)
+        : (DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+    br = app->br_status
+        ? app->br_status
+        : CreateSolidBrush(app->palette.surface);
+    FillRect(dis->hDC, &dis->rcItem, br);
+    if (!app->br_status)
+        DeleteObject(br);
+
+    r = dis->rcItem;
+    InflateRect(&r, -6, 0);
+    SetBkMode(dis->hDC, TRANSPARENT);
+    SetTextColor(dis->hDC, app->palette.text);
+    if (app->font_status)
+        SelectObject(dis->hDC, app->font_status);
+    DrawTextW(dis->hDC, text ? text : L"", -1, &r, align);
 }
 
 static const wchar_t *format_from_path(const wchar_t *path)
@@ -335,8 +404,7 @@ void dabom_zoom_by(AppState *app, double factor)
     if (app->mode != VIEW_FULL || !app->full_bmp)
         return;
 
-    GetClientRect(app->hwnd, &rc);
-    rc.bottom -= DABOM_STATUS_H;
+    get_content_rect(app, &rc);
     zw = (double)(rc.right - rc.left) / (double)app->full_w;
     zh = (double)(rc.bottom - rc.top) / (double)app->full_h;
     fit = zw < zh ? zw : zh;
@@ -478,16 +546,19 @@ void dabom_open_files_dialog(AppState *app) { open_dialog(app, 0); }
 
 static void get_content_rect(AppState *app, RECT *rc)
 {
-    /* Menubar is non-client (SetMenu); client starts below it automatically. */
+    /* Menubar is non-client (SetMenu). Status bar is a child chrome control —
+       exclude its height so image paint never covers it. */
     GetClientRect(app->hwnd, rc);
-    rc->bottom -= DABOM_STATUS_H;
+    rc->bottom -= status_bar_height(app);
+    if (rc->bottom < rc->top)
+        rc->bottom = rc->top;
 }
 
 static void paint_empty(AppState *app, HDC hdc, const RECT *rc)
 {
     RECT r = *rc;
     const wchar_t *brand = L"DaBom";
-    const wchar_t *ver = DABOM_TITLE_W; /* e.g. DaBom 0.0.4 */
+    const wchar_t *ver = DABOM_TITLE_W; /* e.g. DaBom 0.0.5 */
     const wchar_t *sub = L"사진 폴더를 열어보세요";
     const wchar_t *hint = L"폴더 열기 또는 파일 열기로 이미지를 불러옵니다";
     SIZE sz;
@@ -671,10 +742,10 @@ static void paint_all(AppState *app)
 
     get_content_rect(app, &content);
 
-    /* Fill full client first so status-bar strip matches chrome. */
+    /* Paint image/content only — status bar is frame chrome (child control). */
     {
         HBRUSH br = CreateSolidBrush(app->palette.bg);
-        FillRect(mem, &rc, br);
+        FillRect(mem, &content, br);
         DeleteObject(br);
     }
 
@@ -685,7 +756,11 @@ static void paint_all(AppState *app)
     else
         paint_full(app, mem, &content);
 
-    BitBlt(hdc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
+    BitBlt(hdc, content.left, content.top,
+        content.right - content.left, content.bottom - content.top,
+        mem, content.left, content.top, SRCCOPY);
+    (void)w;
+    (void)h;
     SelectObject(mem, old);
     DeleteObject(dib);
     DeleteDC(mem);
@@ -1020,20 +1095,22 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         app->hwnd = hwnd;
         dabom_theme_apply(app, 1);
         create_menubar(app);
-        app->status = CreateWindowExW(0, L"STATIC", L"",
-            WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE,
-            0, 0, 100, DABOM_STATUS_H, hwnd, NULL, GetModuleHandleW(NULL), NULL);
-        app->status_meta = CreateWindowExW(0, L"STATIC", L"",
-            WS_CHILD | WS_VISIBLE | SS_RIGHT | SS_CENTERIMAGE,
-            0, 0, 100, DABOM_STATUS_H, hwnd, NULL, GetModuleHandleW(NULL), NULL);
-        SendMessageW(app->status, WM_SETFONT, (WPARAM)app->font_status, TRUE);
-        SendMessageW(app->status_meta, WM_SETFONT, (WPARAM)app->font_status, TRUE);
-        layout_children(app);
+        app->status_left[0] = 0;
+        app->status_right[0] = 0;
+        app->status = CreateStatusWindowW(
+            WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
+            L"", hwnd, DABOM_STATUS_ID);
+        if (app->status) {
+            SetWindowTheme(app->status, L"", L"");
+            SendMessageW(app->status, WM_SETFONT, (WPARAM)app->font_status, TRUE);
+            SendMessageW(app->status, SB_SETBKCOLOR, 0, (LPARAM)app->palette.surface);
+        }
+        layout_statusbar(app);
         dabom_update_chrome(app);
         return 0;
 
     case WM_SIZE:
-        layout_children(app);
+        layout_statusbar(app);
         InvalidateRect(hwnd, NULL, TRUE);
         return 0;
 
@@ -1063,6 +1140,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         const DRAWITEMSTRUCT *dis = (const DRAWITEMSTRUCT *)lParam;
         if (dis && dis->CtlType == ODT_MENU) {
             draw_file_menu_item(app, dis);
+            return TRUE;
+        }
+        /* Status bar owner-draw parts (SBT_OWNERDRAW). */
+        if (dis && app->status && dis->hwndItem == app->status) {
+            draw_status_part(app, dis);
             return TRUE;
         }
         break;
@@ -1205,15 +1287,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             dabom_next(app, 1);
         return 0;
 
-    case WM_CTLCOLORSTATIC: {
-        HDC hdc = (HDC)wParam;
-        SetTextColor(hdc, app->palette.text);
-        SetBkColor(hdc, app->palette.surface);
-        if (!app->br_status)
-            app->br_status = CreateSolidBrush(app->palette.surface);
-        return (LRESULT)app->br_status;
-    }
-
     case WM_DESTROY:
         if (app->slideshow)
             KillTimer(hwnd, ID_TIMER_SLIDE);
@@ -1313,9 +1386,9 @@ void dabom_apply_fonts(AppState *app)
         return;
     if (app->status)
         SendMessageW(app->status, WM_SETFONT, (WPARAM)app->font_status, TRUE);
-    if (app->status_meta)
-        SendMessageW(app->status_meta, WM_SETFONT, (WPARAM)app->font_status, TRUE);
     InvalidateRect(app->hwnd, NULL, TRUE);
+    if (app->status)
+        InvalidateRect(app->status, NULL, TRUE);
 }
 
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmd, int show)
@@ -1330,7 +1403,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmd, int show)
 
     ZeroMemory(&g_app, sizeof(g_app));
     icc.dwSize = sizeof(icc);
-    icc.dwICC = ICC_STANDARD_CLASSES;
+    icc.dwICC = ICC_STANDARD_CLASSES | ICC_BAR_CLASSES;
     InitCommonControlsEx(&icc);
 
     if (FAILED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED))) {

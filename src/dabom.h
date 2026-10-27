@@ -38,18 +38,19 @@
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "uxtheme.lib")
 #endif
 
 /* Single source of truth for app version (keep DABOM_VERSION_W in sync). */
-#define DABOM_VERSION   "0.0.4"
-#define DABOM_VERSION_W L"0.0.4"
+#define DABOM_VERSION   "0.0.5"
+#define DABOM_VERSION_W L"0.0.5"
 #define DABOM_TITLE_W   L"DaBom " DABOM_VERSION_W
 
 #define DABOM_MAX_PATH 1024
 #define DABOM_MAX_FILES 8192
 #define DABOM_THUMB 160
 #define DABOM_THUMB_PAD 12
-#define DABOM_STATUS_H 28
+#define DABOM_STATUS_ID 3001
 #define DABOM_SLIDE_MS 3000
 #define DABOM_ZOOM_MIN 0.1
 #define DABOM_ZOOM_MAX 8.0
@@ -106,8 +107,9 @@ typedef struct {
     HMENU hmenu;      /* Win32 non-client menubar (SetMenu) */
     HMENU menu_file;  /* 파일 popup (owner-draw, Apps theme) */
     HBRUSH br_menu;   /* 파일 popup MIM_BACKGROUND brush */
-    HWND status;      /* left: filename + index */
-    HWND status_meta; /* right: dimensions / format / size / date */
+    HWND status;      /* Win32 STATUSCLASSNAME common control */
+    wchar_t status_left[DABOM_MAX_PATH + 64];  /* part 0: filename + index */
+    wchar_t status_right[256];                 /* part 1: date/size/format/dims */
     HFONT font_ui;    /* lfMessageFont — labels, thumbs */
     HFONT font_status;/* lfStatusFont — status bar */
     HFONT font_brand;

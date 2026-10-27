@@ -1,9 +1,15 @@
 # DaBom
 
-**버전 0.0.4** — Windows 네이티브 **C (Win32 + WIC)** 데스크톱 사진 뷰어입니다.  
+**버전 0.0.5** — Windows 네이티브 **C (Win32 + WIC)** 데스크톱 사진 뷰어입니다.  
 이전 Electron/Vite/React 구현은 이 C 앱으로 대체되었습니다.
 
-앱 버전은 `src/dabom.h`의 `DABOM_VERSION`이 단일 기준이며, 창 제목·빈 화면 부제에 `DaBom 0.0.4`로 표시됩니다.
+앱 버전은 `src/dabom.h`의 `DABOM_VERSION`이 단일 기준이며, 창 제목·빈 화면 부제에 `DaBom 0.0.5`로 표시됩니다.
+
+### 0.0.5 포함
+
+- **Win32 공통 컨트롤 상태바** (`STATUSCLASSNAME` / `CreateStatusWindow`) — 클라이언트 이미지 영역 밖 프레임 크롬
+- `WM_SIZE` + `SB_SETPARTS`로 도킹·분할; `get_content_rect`가 상태바 높이를 제외해 이미지가 덮지 않음
+- Apps 다크/라이트: `SB_SETBKCOLOR` + owner-draw 파트로 배경·글자색 맞춤
 
 ### 0.0.4 포함
 
@@ -61,7 +67,7 @@ build\dabom.exe
 2. 창 프레임 메뉴바 액션: 이전 | 다음 | 축소 | 확대 | 맞춤 | 원본크기 | 슬라이드쇼
 3. 썸네일 그리드 · 전체 보기(←→↑↓, Esc로 그리드)
 4. 확대·축소(`+`/`-`), **맞춤**(0), **원본크기**(1), 드래그 팬
-5. 하단 상태줄 — 왼쪽 `파일명 (n / total)`, 오른쪽 `날짜 시각  WxH(형식)  크기`
+5. 하단 **Win32 상태바** — 왼쪽 `파일명 (n / total)`, 오른쪽 `날짜 시각  WxH(형식)  크기`
 6. 마지막 폴더 기억: `%APPDATA%\DaBom\settings.ini`
 7. **다크/라이트** — Windows 앱 모드 연동(즉시 갱신)
 
@@ -73,6 +79,7 @@ build\dabom.exe
 - 라이브 갱신: `WM_SETTINGCHANGE` (`ImmersiveColorSet`) 및 `WM_THEMECHANGED`에서 브러시·색을 다시 만들고 `InvalidateRect`합니다.
 - 선택: 다크 모드에서 `DwmSetWindowAttribute` immersive dark (제목 표시줄).
 - 시스템 메뉴바는 Windows 테마를 따르고, **파일** 팝업만 Apps 라이트/다크 owner-draw를 유지합니다.
+- 상태바: 비주얼 스타일 해제 후 `SB_SETBKCOLOR` + owner-draw로 Apps 팔레트 배경·글자색을 맞춥니다.
 
 ### UI 글꼴 (Windows 시스템)
 

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(DaBom VERSION 0.0.3 LANGUAGES C)
+project(DaBom VERSION 0.0.5 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -18,7 +18,7 @@ if(MSVC)
 endif()
 
 target_link_libraries(dabom PRIVATE
-  user32 gdi32 comctl32 ole32 shell32 windowscodecs uuid comdlg32 dwmapi advapi32
+  user32 gdi32 comctl32 ole32 shell32 windowscodecs uuid comdlg32 dwmapi advapi32 uxtheme
 )
 
 set_target_properties(dabom PROPERTIES

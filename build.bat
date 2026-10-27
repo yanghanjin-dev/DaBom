@@ -31,7 +31,7 @@ if defined VCVARS (
     exit /b 1
   )
   echo [BUILD] dabom.exe ^(MSVC^) ...
-  cl /nologo /W3 /O2 /utf-8 /DUNICODE /D_UNICODE /TC /I src src\main.c src\image.c src\files.c src\config.c /Fe:build\dabom.exe /Fo:build\ /link /SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup user32.lib gdi32.lib comctl32.lib ole32.lib shell32.lib windowscodecs.lib uuid.lib comdlg32.lib dwmapi.lib advapi32.lib
+  cl /nologo /W3 /O2 /utf-8 /DUNICODE /D_UNICODE /TC /I src src\main.c src\image.c src\files.c src\config.c /Fe:build\dabom.exe /Fo:build\ /link /SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup user32.lib gdi32.lib comctl32.lib ole32.lib shell32.lib windowscodecs.lib uuid.lib comdlg32.lib dwmapi.lib advapi32.lib uxtheme.lib
   if errorlevel 1 (
     echo [FAIL] compile/link error
     exit /b 1
@@ -52,7 +52,7 @@ if not defined GCC (
 for %%G in ("%GCC%") do set "GCCDIR=%%~dpG"
 set "PATH=%GCCDIR%;%PATH%"
 echo [BUILD] dabom.exe ^(gcc fallback^) ...
-"%GCC%" -municode -DUNICODE -D_UNICODE -O2 -I src -o build\dabom.exe src\main.c src\image.c src\files.c src\config.c -mwindows -ldwmapi -lcomctl32 -lole32 -lshell32 -lwindowscodecs -luuid -lcomdlg32 -lgdi32 -luser32 -ladvapi32 -loleaut32
+"%GCC%" -municode -DUNICODE -D_UNICODE -O2 -I src -o build\dabom.exe src\main.c src\image.c src\files.c src\config.c -mwindows -ldwmapi -lcomctl32 -lole32 -lshell32 -lwindowscodecs -luuid -lcomdlg32 -lgdi32 -luser32 -ladvapi32 -loleaut32 -luxtheme
 if errorlevel 1 (
   echo [FAIL] gcc compile/link error
   exit /b 1
