@@ -1,4 +1,4 @@
-#include "dabom.h"
+﻿#include "dabom.h"
 #include <dwmapi.h>
 #include <uxtheme.h>
 
@@ -13,7 +13,18 @@
 static AppState g_app;
 
 static void dabom_update_menubar(AppState *app);
-static void get_content_rect(AppState *app, RECT *rc);
+
+void dabom_get_content_rect(AppState *app, RECT *rc)
+{
+    GetClientRect(app->hwnd, rc);
+    if (!app->fullscreen && app->status && IsWindowVisible(app->status)) {
+        RECT sr;
+        GetWindowRect(app->status, &sr);
+        rc->bottom -= (sr.bottom - sr.top);
+    }
+    if (rc->bottom < rc->top)
+        rc->bottom = rc->top;
+}
 
 /* ---- Windows Apps theme (HKCU Personalize / ShouldAppsUseDarkMode) ---- */
 
@@ -109,8 +120,8 @@ void dabom_theme_apply(AppState *app, int force)
 
     apply_titlebar_dark(app->hwnd, dark);
 
-    /* Refresh 파일 popup frame brush (owner-draw items read palette live). */
-    if (app->menu_file) {
+    /* Refresh themed popup brushes (파일 + context). */
+    {
         MENUINFO mi;
         COLORREF bg = dark ? RGB(0x2D, 0x2D, 0x2D) : RGB(0xFF, 0xFF, 0xFF);
         if (app->br_menu) {
@@ -123,7 +134,9 @@ void dabom_theme_apply(AppState *app, int force)
         mi.fMask = MIM_BACKGROUND | MIM_STYLE;
         mi.dwStyle = MNS_CHECKORBMP;
         mi.hbrBack = app->br_menu;
-        SetMenuInfo(app->menu_file, &mi);
+        if (app->menu_file)
+            SetMenuInfo(app->menu_file, &mi);
+        dabom_ctxmenu_theme(app);
     }
 
     if (app->status) {
@@ -329,11 +342,19 @@ void dabom_update_chrome(AppState *app)
         const wchar_t *path = app->files[app->current].path;
         const wchar_t *name = wcsrchr(path, L'\\');
         name = name ? name + 1 : path;
-        _snwprintf(left, DABOM_MAX_PATH + 64, L"%s  (%d / %d)%s",
+        _snwprintf(left, DABOM_MAX_PATH + 64, L"%s  (%d / %d)%s%s",
             name, app->current + 1, app->file_count,
-            app->slideshow ? L"  · 슬라이드쇼" : L"");
+            app->slideshow ? L"  · 슬라이드쇼" : L"",
+            app->hdr_preview ? L"  · HDR" : L"");
         left[DABOM_MAX_PATH + 63] = 0;
         build_image_meta(app, path, meta, 256);
+        if (!app->pixel_info && app->zoom > 0) {
+            wchar_t zbuf[32];
+            _snwprintf(zbuf, 32, L"  %d%%", (int)(app->zoom * 100.0 + 0.5));
+            zbuf[31] = 0;
+            if (wcslen(meta) + wcslen(zbuf) < 255)
+                wcscat(meta, zbuf);
+        }
         _snwprintf(title, DABOM_MAX_PATH + 80, L"DaBom - %s (%d / %d)",
             name, app->current + 1, app->file_count);
         title[DABOM_MAX_PATH + 79] = 0;
@@ -380,44 +401,147 @@ void dabom_next(AppState *app, int delta)
     dabom_goto_index(app, app->current + delta);
 }
 
+void dabom_set_layout(AppState *app, LayoutMode layout)
+{
+    app->layout = layout;
+    switch (layout) {
+    case LAYOUT_ACTUAL:
+    case LAYOUT_ACTUAL_KEEP:
+        app->fit_mode = 0;
+        app->zoom = 1.0;
+        break;
+    case LAYOUT_ZOOM_KEEP:
+        app->fit_mode = 0;
+        if (app->zoom <= 0) app->zoom = 1.0;
+        break;
+    case LAYOUT_STRETCH:
+        app->fit_mode = 1;
+        break;
+    default:
+        app->fit_mode = 1;
+        break;
+    }
+    app->pan_x = app->pan_y = 0;
+    if (app->mode != VIEW_FULL && (app->full_bmp || app->file_count > 0)) {
+        if (!app->full_bmp) dabom_load_current_full(app);
+        dabom_set_mode(app, VIEW_FULL);
+    }
+    dabom_save_settings(app);
+    InvalidateRect(app->hwnd, NULL, TRUE);
+}
+
+void dabom_set_page_mode(AppState *app, PageMode page)
+{
+    app->page_mode = page;
+    if (app->file_count > 0) {
+        if (app->mode != VIEW_FULL)
+            dabom_set_mode(app, VIEW_FULL);
+        dabom_load_page_bitmaps(app);
+    }
+    dabom_save_settings(app);
+    InvalidateRect(app->hwnd, NULL, TRUE);
+}
+
 void dabom_fit(AppState *app)
 {
-    app->fit_mode = 1;
-    app->pan_x = app->pan_y = 0;
-    InvalidateRect(app->hwnd, NULL, TRUE);
+    dabom_set_layout(app, LAYOUT_FIT);
 }
 
 void dabom_actual_size(AppState *app)
 {
     if (app->mode != VIEW_FULL || !app->full_bmp)
         return;
-    app->fit_mode = 0;
-    app->zoom = 1.0;
-    app->pan_x = app->pan_y = 0;
-    InvalidateRect(app->hwnd, NULL, TRUE);
+    dabom_set_layout(app, LAYOUT_ACTUAL);
+}
+
+void dabom_stretch(AppState *app)
+{
+    if (!app->full_bmp)
+        return;
+    dabom_set_layout(app, LAYOUT_STRETCH);
 }
 
 void dabom_zoom_by(AppState *app, double factor)
 {
     RECT rc;
-    double zw, zh, fit;
+    int cx, cy;
+    if (app->mode != VIEW_FULL || !app->full_bmp)
+        return;
+    dabom_get_content_rect(app, &rc);
+    cx = (rc.left + rc.right) / 2;
+    cy = (rc.top + rc.bottom) / 2;
+    dabom_zoom_at(app, factor, cx, cy);
+}
+
+void dabom_zoom_at(AppState *app, double factor, int mx, int my)
+{
+    RECT rc;
+    double zw, zh, fit, old_z, new_z;
+    int cw, ch, old_dw, old_dh, old_dx, old_dy;
+    int new_dw, new_dh;
+    double img_x, img_y;
+
     if (app->mode != VIEW_FULL || !app->full_bmp)
         return;
 
-    get_content_rect(app, &rc);
-    zw = (double)(rc.right - rc.left) / (double)app->full_w;
-    zh = (double)(rc.bottom - rc.top) / (double)app->full_h;
-    fit = zw < zh ? zw : zh;
-    if (fit <= 0)
-        fit = 1.0;
+    dabom_get_content_rect(app, &rc);
+    cw = rc.right - rc.left;
+    ch = rc.bottom - rc.top;
+    if (cw <= 0 || ch <= 0)
+        return;
 
-    if (app->fit_mode) {
-        app->zoom = fit;
+    zw = (double)cw / (double)app->full_w;
+    zh = (double)ch / (double)app->full_h;
+    fit = zw < zh ? zw : zh;
+    if (fit <= 0) fit = 1.0;
+
+    if (app->fit_mode || app->layout == LAYOUT_FIT || app->layout == LAYOUT_FIT_LARGE ||
+        app->layout == LAYOUT_FIT_WIDTH || app->layout == LAYOUT_FIT_HEIGHT ||
+        app->layout == LAYOUT_STRETCH) {
+        if (app->layout == LAYOUT_FIT_WIDTH) old_z = zw;
+        else if (app->layout == LAYOUT_FIT_HEIGHT) old_z = zh;
+        else if (app->layout == LAYOUT_FIT_LARGE) {
+            old_z = fit;
+            if (old_z > 1.0) old_z = 1.0;
+        } else if (app->layout == LAYOUT_STRETCH) {
+            old_z = fit; /* approximate for zoom handoff */
+        } else
+            old_z = fit;
+        app->zoom = old_z;
         app->fit_mode = 0;
+        if (app->layout != LAYOUT_ZOOM_KEEP && app->layout != LAYOUT_ACTUAL_KEEP)
+            app->layout = LAYOUT_ZOOM_KEEP;
+    } else {
+        old_z = app->zoom;
     }
-    app->zoom *= factor;
-    if (app->zoom < DABOM_ZOOM_MIN) app->zoom = DABOM_ZOOM_MIN;
-    if (app->zoom > DABOM_ZOOM_MAX) app->zoom = DABOM_ZOOM_MAX;
+
+    old_dw = (int)(app->full_w * old_z + 0.5);
+    old_dh = (int)(app->full_h * old_z + 0.5);
+    old_dx = rc.left + (cw - old_dw) / 2 + app->pan_x;
+    old_dy = rc.top + (ch - old_dh) / 2 + app->pan_y;
+
+    /* Image pixel under cursor before zoom. */
+    if (old_z > 0) {
+        img_x = (double)(mx - old_dx) / old_z;
+        img_y = (double)(my - old_dy) / old_z;
+    } else {
+        img_x = app->full_w * 0.5;
+        img_y = app->full_h * 0.5;
+    }
+
+    new_z = old_z * factor;
+    if (new_z < DABOM_ZOOM_MIN) new_z = DABOM_ZOOM_MIN;
+    if (new_z > DABOM_ZOOM_MAX) new_z = DABOM_ZOOM_MAX;
+    app->zoom = new_z;
+
+    new_dw = (int)(app->full_w * new_z + 0.5);
+    new_dh = (int)(app->full_h * new_z + 0.5);
+    /* Keep img_x,img_y under cursor. */
+    app->pan_x = mx - rc.left - (cw - new_dw) / 2 - (int)(img_x * new_z + 0.5);
+    app->pan_y = my - rc.top - (ch - new_dh) / 2 - (int)(img_y * new_z + 0.5);
+
+    app->nav_dismissed = 0;
+    dabom_update_chrome(app);
     InvalidateRect(app->hwnd, NULL, TRUE);
 }
 
@@ -544,15 +668,7 @@ static HRESULT open_dialog(AppState *app, int folders)
 void dabom_open_folder_dialog(AppState *app) { open_dialog(app, 1); }
 void dabom_open_files_dialog(AppState *app) { open_dialog(app, 0); }
 
-static void get_content_rect(AppState *app, RECT *rc)
-{
-    /* Menubar is non-client (SetMenu). Status bar is a child chrome control —
-       exclude its height so image paint never covers it. */
-    GetClientRect(app->hwnd, rc);
-    rc->bottom -= status_bar_height(app);
-    if (rc->bottom < rc->top)
-        rc->bottom = rc->top;
-}
+/* dabom_get_content_rect defined near top */
 
 static void paint_empty(AppState *app, HDC hdc, const RECT *rc)
 {
@@ -670,18 +786,207 @@ static void paint_grid(AppState *app, HDC hdc, const RECT *rc)
     }
 }
 
+static double compute_layout_scale(AppState *app, int cw, int ch, UINT iw, UINT ih)
+{
+    double zw = (double)cw / (double)iw;
+    double zh = (double)ch / (double)ih;
+    double fit = zw < zh ? zw : zh;
+    if (fit <= 0) fit = 1.0;
+    switch (app->layout) {
+    case LAYOUT_FIT_WIDTH: return zw > 0 ? zw : 1.0;
+    case LAYOUT_FIT_HEIGHT: return zh > 0 ? zh : 1.0;
+    case LAYOUT_FIT_LARGE:
+        return fit > 1.0 ? 1.0 : fit;
+    case LAYOUT_STRETCH:
+        return -1.0; /* special: fill */
+    case LAYOUT_ACTUAL:
+    case LAYOUT_ACTUAL_KEEP:
+        return 1.0;
+    case LAYOUT_ZOOM_KEEP:
+        return app->zoom > 0 ? app->zoom : 1.0;
+    case LAYOUT_FIT:
+    default:
+        return fit;
+    }
+}
+
+static void blit_image(AppState *app, HDC hdc, HBITMAP bmp, UINT iw, UINT ih,
+    int dx, int dy, int dw, int dh)
+{
+    HBITMAP draw = bmp;
+    HBITMAP hdr = NULL;
+    HDC mem;
+    HBITMAP old;
+    if (!bmp || iw == 0 || ih == 0 || dw <= 0 || dh <= 0)
+        return;
+    if (app->hdr_preview) {
+        hdr = dabom_hdr_preview_bitmap(bmp, iw, ih);
+        if (hdr) draw = hdr;
+    }
+    mem = CreateCompatibleDC(hdc);
+    old = (HBITMAP)SelectObject(mem, draw);
+    SetStretchBltMode(hdc, app->smooth ? HALFTONE : COLORONCOLOR);
+    if (app->smooth)
+        SetBrushOrgEx(hdc, 0, 0, NULL);
+    StretchBlt(hdc, dx, dy, dw, dh, mem, 0, 0, (int)iw, (int)ih, SRCCOPY);
+    SelectObject(mem, old);
+    DeleteDC(mem);
+    if (hdr) DeleteObject(hdr);
+}
+
+static int nav_should_show(AppState *app, int cw, int ch, int dw, int dh)
+{
+    if (app->nav_dismissed || app->mode != VIEW_FULL || !app->full_bmp)
+        return 0;
+    if (app->continuous || app->page_mode != PAGE_ONE)
+        return 0;
+    if (app->layout == LAYOUT_STRETCH)
+        return 0;
+    /* Show when image is larger than viewport (not fully visible). */
+    return (dw > cw + 1) || (dh > ch + 1);
+}
+
+static void paint_navigator(AppState *app, HDC hdc, const RECT *rc, int dx, int dy, int dw, int dh)
+{
+    const int nav_w = 160, nav_h = 120, pad = 10, title_h = 18;
+    RECT box, xbtn, thumb;
+    int cw = rc->right - rc->left;
+    int ch = rc->bottom - rc->top;
+    double ts, vx, vy, vw, vh;
+    int tw, th, tdx, tdy;
+    HBRUSH br;
+    HPEN pen, oldp;
+    HDC mem;
+    HBITMAP old;
+
+    box.right = rc->right - pad;
+    box.bottom = rc->bottom - pad;
+    box.left = box.right - nav_w;
+    box.top = box.bottom - nav_h;
+    app->nav_rc = box;
+
+    br = CreateSolidBrush(app->palette.dark ? RGB(40, 44, 48) : RGB(250, 250, 252));
+    FillRect(hdc, &box, br);
+    DeleteObject(br);
+    pen = CreatePen(PS_SOLID, 1, app->palette.border);
+    oldp = (HPEN)SelectObject(hdc, pen);
+    SelectObject(hdc, GetStockObject(NULL_BRUSH));
+    Rectangle(hdc, box.left, box.top, box.right, box.bottom);
+
+    /* Title + close */
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, app->palette.text);
+    if (app->font_ui) SelectObject(hdc, app->font_ui);
+    TextOutW(hdc, box.left + 6, box.top + 2, L"탐색", 2);
+    xbtn.left = box.right - 18;
+    xbtn.top = box.top + 2;
+    xbtn.right = box.right - 4;
+    xbtn.bottom = box.top + title_h - 2;
+    DrawTextW(hdc, L"X", 1, &xbtn, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    thumb.left = box.left + 6;
+    thumb.top = box.top + title_h;
+    thumb.right = box.right - 6;
+    thumb.bottom = box.bottom - 6;
+    tw = thumb.right - thumb.left;
+    th = thumb.bottom - thumb.top;
+    ts = (double)tw / (double)app->full_w;
+    if ((double)app->full_h * ts > (double)th)
+        ts = (double)th / (double)app->full_h;
+    tw = (int)(app->full_w * ts + 0.5);
+    th = (int)(app->full_h * ts + 0.5);
+    tdx = thumb.left + ((thumb.right - thumb.left) - tw) / 2;
+    tdy = thumb.top + ((thumb.bottom - thumb.top) - th) / 2;
+
+    mem = CreateCompatibleDC(hdc);
+    old = (HBITMAP)SelectObject(mem, app->full_bmp);
+    SetStretchBltMode(hdc, HALFTONE);
+    StretchBlt(hdc, tdx, tdy, tw, th, mem, 0, 0, (int)app->full_w, (int)app->full_h, SRCCOPY);
+    SelectObject(mem, old);
+    DeleteDC(mem);
+
+    /* Viewport rect in navigator coords */
+    if (dw > 0 && dh > 0 && ts > 0) {
+        vx = (double)(rc->left - dx) * ts;
+        vy = (double)(rc->top - dy) * ts;
+        vw = (double)cw * ts;
+        vh = (double)ch * ts;
+        if (vx < 0) { vw += vx; vx = 0; }
+        if (vy < 0) { vh += vy; vy = 0; }
+        if (vx + vw > tw) vw = tw - vx;
+        if (vy + vh > th) vh = th - vy;
+        app->nav_view_rc.left = tdx + (int)vx;
+        app->nav_view_rc.top = tdy + (int)vy;
+        app->nav_view_rc.right = app->nav_view_rc.left + (int)(vw < 2 ? 2 : vw);
+        app->nav_view_rc.bottom = app->nav_view_rc.top + (int)(vh < 2 ? 2 : vh);
+        SelectObject(hdc, CreatePen(PS_SOLID, 2, app->palette.accent));
+        SelectObject(hdc, GetStockObject(NULL_BRUSH));
+        Rectangle(hdc, app->nav_view_rc.left, app->nav_view_rc.top,
+            app->nav_view_rc.right, app->nav_view_rc.bottom);
+    }
+
+    SelectObject(hdc, oldp);
+    DeleteObject(pen);
+    (void)ch;
+}
+
+static void paint_one_slot(AppState *app, HDC hdc, const RECT *cell,
+    HBITMAP bmp, UINT iw, UINT ih, int apply_pan)
+{
+    int cw = cell->right - cell->left;
+    int ch = cell->bottom - cell->top;
+    double scale;
+    int dw, dh, dx, dy;
+
+    if (!bmp || iw == 0 || ih == 0 || cw <= 0 || ch <= 0)
+        return;
+    scale = compute_layout_scale(app, cw, ch, iw, ih);
+    if (scale < 0) {
+        /* stretch */
+        blit_image(app, hdc, bmp, iw, ih, cell->left, cell->top, cw, ch);
+        if (apply_pan) {
+            app->view_dx = cell->left; app->view_dy = cell->top;
+            app->view_dw = cw; app->view_dh = ch;
+            app->view_scale = 1.0;
+            app->zoom = 1.0;
+        }
+        return;
+    }
+    if (apply_pan && !app->fit_mode &&
+        (app->layout == LAYOUT_ZOOM_KEEP || app->layout == LAYOUT_ACTUAL ||
+         app->layout == LAYOUT_ACTUAL_KEEP)) {
+        scale = app->zoom > 0 ? app->zoom : scale;
+    } else if (app->fit_mode || app->layout == LAYOUT_FIT || app->layout == LAYOUT_FIT_LARGE ||
+               app->layout == LAYOUT_FIT_WIDTH || app->layout == LAYOUT_FIT_HEIGHT) {
+        if (apply_pan) {
+            app->zoom = scale;
+            app->pan_x = app->pan_y = 0;
+        }
+    }
+
+    dw = (int)(iw * scale + 0.5);
+    dh = (int)(ih * scale + 0.5);
+    dx = cell->left + (cw - dw) / 2 + (apply_pan ? app->pan_x : 0);
+    dy = cell->top + (ch - dh) / 2 + (apply_pan ? app->pan_y : 0);
+    blit_image(app, hdc, bmp, iw, ih, dx, dy, dw, dh);
+    if (apply_pan) {
+        app->view_dx = dx; app->view_dy = dy;
+        app->view_dw = dw; app->view_dh = dh;
+        app->view_scale = scale;
+    }
+}
+
 static void paint_full(AppState *app, HDC hdc, const RECT *rc)
 {
     HBRUSH bg = CreateSolidBrush(app->palette.bg);
-    double zw, zh, scale;
-    int dw, dh, dx, dy;
     int cw = rc->right - rc->left;
     int ch = rc->bottom - rc->top;
+    int i;
 
     FillRect(hdc, rc, bg);
     DeleteObject(bg);
 
-    if (!app->full_bmp || app->full_w == 0 || app->full_h == 0) {
+    if ((!app->full_bmp || app->full_w == 0 || app->full_h == 0) && app->file_count <= 0) {
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, app->palette.muted);
         SelectObject(hdc, app->font_ui);
@@ -692,30 +997,117 @@ static void paint_full(AppState *app, HDC hdc, const RECT *rc)
         return;
     }
 
-    zw = (double)cw / (double)app->full_w;
-    zh = (double)ch / (double)app->full_h;
-    if (app->fit_mode) {
-        scale = zw < zh ? zw : zh;
-        if (scale <= 0) scale = 1.0;
-        app->zoom = scale;
-        app->pan_x = app->pan_y = 0;
-    } else {
-        scale = app->zoom;
+    if (app->continuous) {
+        int y = rc->top - app->scroll_y;
+        int max_i = app->file_count;
+        int drawn = 0;
+        for (i = app->current; i < max_i && y < rc->bottom + 400; i++) {
+            HBITMAP bmp = NULL;
+            UINT iw = 0, ih = 0;
+            RECT cell;
+            int slot_h;
+            if (i == app->current && app->full_bmp) {
+                bmp = app->full_bmp; iw = app->full_w; ih = app->full_h;
+            } else {
+                int s = i - app->current;
+                if (s >= 0 && s < 4 && app->page_index[s] == i && app->page_bmp[s]) {
+                    bmp = app->page_bmp[s]; iw = app->page_w[s]; ih = app->page_h[s];
+                } else {
+                    dabom_ensure_thumb(app, i);
+                    continue;
+                }
+            }
+            if (!bmp) continue;
+            {
+                double sc = (double)cw / (double)iw;
+                if (sc <= 0) sc = 1.0;
+                slot_h = (int)(ih * sc + 0.5) + 12;
+            }
+            cell.left = rc->left;
+            cell.right = rc->right;
+            cell.top = y;
+            cell.bottom = y + slot_h - 12;
+            paint_one_slot(app, hdc, &cell, bmp, iw, ih, i == app->current);
+            y += slot_h;
+            drawn++;
+            if (drawn >= 4) break;
+        }
+        app->content_h = (y + app->scroll_y) - rc->top + 40;
+        return;
     }
 
-    dw = (int)(app->full_w * scale + 0.5);
-    dh = (int)(app->full_h * scale + 0.5);
-    dx = rc->left + (cw - dw) / 2 + app->pan_x;
-    dy = rc->top + (ch - dh) / 2 + app->pan_y;
+    if (app->page_mode == PAGE_TWO) {
+        RECT left = *rc, right = *rc;
+        left.right = rc->left + cw / 2 - 2;
+        right.left = rc->left + cw / 2 + 2;
+        paint_one_slot(app, hdc, &left, app->full_bmp, app->full_w, app->full_h, 1);
+        if (app->page_index[1] >= 0 && app->page_bmp[1])
+            paint_one_slot(app, hdc, &right, app->page_bmp[1], app->page_w[1], app->page_h[1], 0);
+        return;
+    }
 
-    {
-        HDC mem = CreateCompatibleDC(hdc);
-        HBITMAP old = (HBITMAP)SelectObject(mem, app->full_bmp);
-        SetStretchBltMode(hdc, HALFTONE);
-        SetBrushOrgEx(hdc, 0, 0, NULL);
-        StretchBlt(hdc, dx, dy, dw, dh, mem, 0, 0, (int)app->full_w, (int)app->full_h, SRCCOPY);
-        SelectObject(mem, old);
-        DeleteDC(mem);
+    if (app->page_mode == PAGE_FOUR) {
+        int mw = cw / 2 - 2, mh = ch / 2 - 2;
+        RECT cells[4];
+        cells[0].left = rc->left; cells[0].top = rc->top;
+        cells[0].right = rc->left + mw; cells[0].bottom = rc->top + mh;
+        cells[1].left = rc->left + mw + 4; cells[1].top = rc->top;
+        cells[1].right = rc->right; cells[1].bottom = rc->top + mh;
+        cells[2].left = rc->left; cells[2].top = rc->top + mh + 4;
+        cells[2].right = rc->left + mw; cells[2].bottom = rc->bottom;
+        cells[3].left = rc->left + mw + 4; cells[3].top = rc->top + mh + 4;
+        cells[3].right = rc->right; cells[3].bottom = rc->bottom;
+        for (i = 0; i < 4; i++) {
+            HBITMAP bmp = NULL;
+            UINT iw = 0, ih = 0;
+            if (i == 0 && app->full_bmp) {
+                bmp = app->full_bmp; iw = app->full_w; ih = app->full_h;
+            } else if (app->page_index[i] >= 0 && app->page_bmp[i]) {
+                bmp = app->page_bmp[i]; iw = app->page_w[i]; ih = app->page_h[i];
+            }
+            if (bmp)
+                paint_one_slot(app, hdc, &cells[i], bmp, iw, ih, i == 0);
+        }
+        return;
+    }
+
+    /* Single page */
+    if (!app->full_bmp) {
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, app->palette.muted);
+        SelectObject(hdc, app->font_ui);
+        {
+            const wchar_t *err = L"이미지를 불러올 수 없습니다.";
+            TextOutW(hdc, rc->left + 24, rc->top + 24, err, (int)wcslen(err));
+        }
+        return;
+    }
+    paint_one_slot(app, hdc, rc, app->full_bmp, app->full_w, app->full_h, 1);
+
+    if (nav_should_show(app, cw, ch, app->view_dw, app->view_dh))
+        paint_navigator(app, hdc, rc, app->view_dx, app->view_dy, app->view_dw, app->view_dh);
+    else
+        ZeroMemory(&app->nav_rc, sizeof(app->nav_rc));
+
+    if (app->pixel_info && app->pix_valid) {
+        wchar_t tip[64];
+        RECT tr;
+        _snwprintf(tip, 64, L"(%d,%d) RGB(%d,%d,%d)",
+            app->pix_x, app->pix_y, app->pix_r, app->pix_g, app->pix_b);
+        tip[63] = 0;
+        tr.left = rc->left + 12;
+        tr.top = rc->top + 12;
+        tr.right = tr.left + 280;
+        tr.bottom = tr.top + 28;
+        {
+            HBRUSH b = CreateSolidBrush(app->palette.surface);
+            FillRect(hdc, &tr, b);
+            DeleteObject(b);
+        }
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, app->palette.text);
+        if (app->font_ui) SelectObject(hdc, app->font_ui);
+        DrawTextW(hdc, tip, -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
 }
 
@@ -740,7 +1132,7 @@ static void paint_all(AppState *app)
     dib = CreateCompatibleBitmap(hdc, w, h);
     old = (HBITMAP)SelectObject(mem, dib);
 
-    get_content_rect(app, &content);
+    dabom_get_content_rect(app, &content);
 
     /* Paint image/content only — status bar is frame chrome (child control). */
     {
@@ -772,7 +1164,7 @@ static int hit_grid_index(AppState *app, int mx, int my)
     RECT rc;
     int cell = DABOM_THUMB + DABOM_THUMB_PAD * 2;
     int cols, col, row, idx;
-    get_content_rect(app, &rc);
+    dabom_get_content_rect(app, &rc);
     if (my < rc.top || my > rc.bottom)
         return -1;
     {
@@ -792,17 +1184,12 @@ static int hit_grid_index(AppState *app, int mx, int my)
 
 /* ---- Win32 non-client menubar (SetMenu) + themed 파일 popup ---- */
 
-typedef struct {
-    const wchar_t *label;    /* NULL when separator */
-    const wchar_t *shortcut; /* optional right-aligned accelerator */
-} FileMenuOd;
-
 enum {
     FILE_MENU_SEP_ID = 1 /* non-command id for owner-draw separator row */
 };
 
 /* Lifetime statics — itemData pointers stay valid while menubar exists. */
-static const FileMenuOd g_file_items[] = {
+static const MenuOdItem g_file_items[] = {
     { L"폴더 열기",     NULL },
     { L"파일 열기",     NULL },
     { L"파일 정보",     L"TAB" },
@@ -819,8 +1206,7 @@ static const UINT g_file_ids[] = {
     ID_MENU_EXIT,
 };
 
-/* Popup colors follow Windows Apps mode (not classic unthemed menu chrome). */
-static void file_menu_colors(const AppState *app,
+void dabom_menu_colors(const AppState *app,
     COLORREF *bg, COLORREF *text, COLORREF *muted,
     COLORREF *sep, COLORREF *hot_bg, COLORREF *border)
 {
@@ -958,24 +1344,24 @@ static void destroy_menubar(AppState *app)
     }
 }
 
-static void measure_file_menu_item(AppState *app, MEASUREITEMSTRUCT *mis)
+void dabom_measure_od_menu(AppState *app, MEASUREITEMSTRUCT *mis)
 {
-    const FileMenuOd *it = (const FileMenuOd *)mis->itemData;
+    const MenuOdItem *it = (const MenuOdItem *)mis->itemData;
     HDC hdc;
     HFONT oldf;
     SIZE sz;
-    int pad_x = 14;
+    int pad_x = 22;
     int gap = 28;
     int sc_w = 0;
     int lab_w = 0;
 
     if (!it) {
-        mis->itemWidth = 160;
+        mis->itemWidth = 180;
         mis->itemHeight = 28;
         return;
     }
     if (!it->label) {
-        mis->itemWidth = 160;
+        mis->itemWidth = 180;
         mis->itemHeight = 9;
         return;
     }
@@ -992,21 +1378,22 @@ static void measure_file_menu_item(AppState *app, MEASUREITEMSTRUCT *mis)
     SelectObject(hdc, oldf);
     ReleaseDC(app->hwnd, hdc);
 
-    mis->itemWidth = (UINT)(pad_x + lab_w + (sc_w ? gap + sc_w : 0) + pad_x);
+    mis->itemWidth = (UINT)(pad_x + lab_w + (sc_w ? gap + sc_w : 0) + 14);
     mis->itemHeight = 28;
 }
 
-static void draw_file_menu_item(AppState *app, const DRAWITEMSTRUCT *dis)
+void dabom_draw_od_menu(AppState *app, const DRAWITEMSTRUCT *dis)
 {
-    const FileMenuOd *it = (const FileMenuOd *)dis->itemData;
+    const MenuOdItem *it = (const MenuOdItem *)dis->itemData;
     COLORREF bg, text, muted, sep, hot, border;
     RECT rc = dis->rcItem;
     HDC hdc = dis->hDC;
     int selected = (dis->itemState & ODS_SELECTED) != 0;
+    int checked = (dis->itemState & ODS_CHECKED) != 0;
     HBRUSH br;
     HFONT oldf;
 
-    file_menu_colors(app, &bg, &text, &muted, &sep, &hot, &border);
+    dabom_menu_colors(app, &bg, &text, &muted, &sep, &hot, &border);
     (void)border;
 
     if (!it || !it->label) {
@@ -1030,17 +1417,21 @@ static void draw_file_menu_item(AppState *app, const DRAWITEMSTRUCT *dis)
     oldf = (HFONT)SelectObject(hdc,
         app->font_ui ? app->font_ui : GetStockObject(DEFAULT_GUI_FONT));
     SetBkMode(hdc, TRANSPARENT);
+    if (checked) {
+        SetTextColor(hdc, app->palette.accent);
+        TextOutW(hdc, rc.left + 6, rc.top + (rc.bottom - rc.top - 12) / 2, L"✓", 1);
+    }
     SetTextColor(hdc, text);
     {
         RECT rlab = rc;
-        rlab.left += 14;
+        rlab.left += 22;
         rlab.right -= 14;
         DrawTextW(hdc, it->label, -1, &rlab,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     }
     if (it->shortcut) {
         RECT rsc = rc;
-        rsc.left += 14;
+        rsc.left += 22;
         rsc.right -= 14;
         SetTextColor(hdc, muted);
         DrawTextW(hdc, it->shortcut, -1, &rsc,
@@ -1093,8 +1484,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     switch (msg) {
     case WM_CREATE:
         app->hwnd = hwnd;
+        if (!app->page_mode) app->page_mode = PAGE_ONE;
         dabom_theme_apply(app, 1);
         create_menubar(app);
+        dabom_ctxmenu_create(app);
         app->status_left[0] = 0;
         app->status_right[0] = 0;
         app->status = CreateStatusWindowW(
@@ -1130,7 +1523,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_MEASUREITEM: {
         MEASUREITEMSTRUCT *mis = (MEASUREITEMSTRUCT *)lParam;
         if (mis && mis->CtlType == ODT_MENU) {
-            measure_file_menu_item(app, mis);
+            dabom_measure_od_menu(app, mis);
             return TRUE;
         }
         break;
@@ -1139,7 +1532,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_DRAWITEM: {
         const DRAWITEMSTRUCT *dis = (const DRAWITEMSTRUCT *)lParam;
         if (dis && dis->CtlType == ODT_MENU) {
-            draw_file_menu_item(app, dis);
+            dabom_draw_od_menu(app, dis);
             return TRUE;
         }
         /* Status bar owner-draw parts (SBT_OWNERDRAW). */
@@ -1171,13 +1564,58 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         case ID_BTN_FIT:    dabom_fit(app); break;
         case ID_BTN_ACTUAL: dabom_actual_size(app); break;
         case ID_BTN_SLIDE:  dabom_toggle_slideshow(app); break;
+        default:
+            dabom_handle_ctx_command(app, LOWORD(wParam));
+            break;
         }
         return 0;
 
-    case WM_KEYDOWN:
+    case WM_CONTEXTMENU: {
+        POINT pt;
+        RECT content;
+        if (lParam == (LPARAM)-1) {
+            GetCursorPos(&pt);
+        } else {
+            pt.x = GET_X_LPARAM(lParam);
+            pt.y = GET_Y_LPARAM(lParam);
+        }
+        dabom_get_content_rect(app, &content);
+        {
+            POINT cpt = pt;
+            ScreenToClient(hwnd, &cpt);
+            if (cpt.y < content.top || cpt.y > content.bottom)
+                break;
+        }
+        if (app->file_count <= 0 && !app->full_bmp)
+            break; /* don't steal when no image */
+        dabom_ctxmenu_popup(app, pt.x, pt.y);
+        return 0;
+    }
+
+    case WM_RBUTTONUP: {
+        POINT pt;
+        RECT content;
+        pt.x = GET_X_LPARAM(lParam);
+        pt.y = GET_Y_LPARAM(lParam);
+        dabom_get_content_rect(app, &content);
+        if (pt.y < content.top || pt.y > content.bottom)
+            break;
+        if (app->file_count <= 0 && !app->full_bmp)
+            break;
+        ClientToScreen(hwnd, &pt);
+        dabom_ctxmenu_popup(app, pt.x, pt.y);
+        return 0;
+    }
+
+    case WM_KEYDOWN: {
+        int ctrl = GetKeyState(VK_CONTROL) < 0;
+        int alt = GetKeyState(VK_MENU) < 0;
+        int shift = GetKeyState(VK_SHIFT) < 0;
         switch (wParam) {
         case VK_ESCAPE:
-            if (app->mode == VIEW_FULL)
+            if (app->fullscreen)
+                dabom_toggle_fullscreen(app);
+            else if (app->mode == VIEW_FULL)
                 dabom_set_mode(app, VIEW_GRID);
             break;
         case VK_LEFT:
@@ -1196,25 +1634,96 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             dabom_zoom_by(app, 1.25);
             break;
         case VK_OEM_MINUS:
-        case VK_SUBTRACT:
+            /* VK_SUBTRACT (0x6D) collides with 'm' — handled via numpad check below */
             dabom_zoom_by(app, 0.8);
+            break;
+        case VK_RETURN:
+            if (alt)
+                dabom_toggle_fullscreen(app);
+            else if (ctrl)
+                dabom_open_explorer(app);
+            break;
+        case VK_DELETE:
+            dabom_delete_current(app);
+            break;
+        case VK_INSERT:
+            dabom_copy_to_library(app);
+            break;
+        case VK_F12:
+            dabom_show_camera_info(app);
             break;
         case '0':
             dabom_fit(app);
             break;
         case '1':
-            dabom_actual_size(app);
+            if (ctrl && alt) dabom_set_page_mode(app, PAGE_ONE);
+            else dabom_actual_size(app);
+            break;
+        case '2':
+            if (ctrl && alt) dabom_set_page_mode(app, PAGE_TWO);
+            break;
+        case '4':
+            if (ctrl && alt) dabom_set_page_mode(app, PAGE_FOUR);
             break;
         case 'O':
-            if (GetKeyState(VK_CONTROL) < 0)
-                dabom_open_folder_dialog(app);
+        case 'o':
+            if (ctrl) dabom_open_folder_dialog(app);
+            break;
+        case 'C':
+        case 'c':
+            if (ctrl) dabom_copy_current(app);
+            break;
+        case 'V':
+        case 'v':
+            if (ctrl) dabom_paste_clipboard(app);
+            break;
+        case 'S':
+        case 's':
+            if (ctrl) dabom_save_as_current(app);
+            else if (alt) dabom_set_sort_mode(app, SORT_NAME);
+            else dabom_toggle_continuous(app);
+            break;
+        case 'T':
+        case 't':
+            if (ctrl) dabom_rotate_current(app);
+            break;
+        case 'R':
+        case 'r':
+            if (ctrl) dabom_resize_dialog(app);
+            break;
+        case 'E':
+        case 'e':
+            if (ctrl && shift) dabom_open_edit_app(app);
+            else if (ctrl) dabom_convert_current(app);
+            break;
+        case 'P':
+            /* 'p'(0x70) collides with VK_F1 — only uppercase 'P' from WM_KEYDOWN letters */
+            if (ctrl) dabom_print_current(app);
+            else if (alt) dabom_toggle_pixel_info(app);
+            break;
+        case 'M':
+            dabom_toggle_smooth(app);
+            break;
+        case 0x6D: /* VK_SUBTRACT numpad- OR literal 'm' if ever sent */
+            if (wParam == VK_SUBTRACT)
+                dabom_zoom_by(app, 0.8);
+            else
+                dabom_toggle_smooth(app);
+            break;
+        case 'H':
+            if (alt) dabom_toggle_hdr(app);
+            break;
+        case 'B':
+            if (alt) dabom_bookmark_current(app);
+            break;
+        case 'Q':
+            if (alt) dabom_toggle_pixel_info(app);
             break;
         case VK_F1:
             show_about(app);
             break;
         case 'X':
-        case 'x':
-            if (GetKeyState(VK_CONTROL) >= 0 && GetKeyState(VK_MENU) >= 0)
+            if (!ctrl && !alt)
                 DestroyWindow(hwnd);
             break;
         case VK_TAB:
@@ -1222,20 +1731,34 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             break;
         }
         return 0;
+    }
 
     case WM_MOUSEWHEEL: {
         int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+        int keys = GET_KEYSTATE_WPARAM(wParam);
         if (app->mode == VIEW_GRID) {
-            /* No selection focus in grid — keep vertical scroll. */
             app->scroll_y -= delta;
             if (app->scroll_y < 0) app->scroll_y = 0;
             InvalidateRect(hwnd, NULL, TRUE);
         } else if (app->mode == VIEW_FULL) {
-            /* Plain wheel: next / previous (zoom stays on menu / +/- keys). */
-            if (delta < 0)
-                dabom_next(app, 1);   /* wheel down → next */
-            else if (delta > 0)
-                dabom_next(app, -1);  /* wheel up → previous */
+            if (keys & MK_CONTROL) {
+                POINT pt;
+                GetCursorPos(&pt);
+                ScreenToClient(hwnd, &pt);
+                if (delta > 0)
+                    dabom_zoom_at(app, 1.25, pt.x, pt.y);
+                else if (delta < 0)
+                    dabom_zoom_at(app, 0.8, pt.x, pt.y);
+            } else if (app->continuous) {
+                app->scroll_y -= delta / 4;
+                if (app->scroll_y < 0) app->scroll_y = 0;
+                InvalidateRect(hwnd, NULL, TRUE);
+            } else {
+                if (delta < 0)
+                    dabom_next(app, 1);
+                else if (delta > 0)
+                    dabom_next(app, -1);
+            }
         }
         return 0;
     }
@@ -1243,6 +1766,27 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_LBUTTONDOWN: {
         int mx = GET_X_LPARAM(lParam);
         int my = GET_Y_LPARAM(lParam);
+        /* Navigator close / drag */
+        if (app->mode == VIEW_FULL && app->nav_rc.right > app->nav_rc.left) {
+            RECT xbtn;
+            xbtn.left = app->nav_rc.right - 18;
+            xbtn.top = app->nav_rc.top + 2;
+            xbtn.right = app->nav_rc.right - 4;
+            xbtn.bottom = app->nav_rc.top + 16;
+            if (mx >= xbtn.left && mx <= xbtn.right && my >= xbtn.top && my <= xbtn.bottom) {
+                app->nav_dismissed = 1;
+                InvalidateRect(hwnd, NULL, TRUE);
+                return 0;
+            }
+            if (mx >= app->nav_rc.left && mx <= app->nav_rc.right &&
+                my >= app->nav_rc.top && my <= app->nav_rc.bottom) {
+                app->nav_dragging = 1;
+                app->drag_ox = mx;
+                app->drag_oy = my;
+                SetCapture(hwnd);
+                return 0;
+            }
+        }
         if (app->mode == VIEW_GRID) {
             int idx = hit_grid_index(app, mx, my);
             if (idx >= 0)
@@ -1259,20 +1803,44 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_MOUSEMOVE: {
         int mx = GET_X_LPARAM(lParam);
         int my = GET_Y_LPARAM(lParam);
-        if (app->dragging && app->mode == VIEW_FULL) {
+        if (app->nav_dragging && app->mode == VIEW_FULL) {
+            int ddx = mx - app->drag_ox;
+            int ddy = my - app->drag_oy;
+            /* Map navigator drag to pan (opposite direction, scaled). */
+            if (app->view_scale > 0 && app->full_w > 0) {
+                double nav_ts = 140.0 / (double)app->full_w;
+                if ((double)app->full_h * nav_ts > 90.0)
+                    nav_ts = 90.0 / (double)app->full_h;
+                if (nav_ts > 0) {
+                    app->pan_x -= (int)(ddx / nav_ts * app->view_scale);
+                    app->pan_y -= (int)(ddy / nav_ts * app->view_scale);
+                }
+            }
+            app->drag_ox = mx;
+            app->drag_oy = my;
+            app->fit_mode = 0;
+            InvalidateRect(hwnd, NULL, TRUE);
+        } else if (app->dragging && app->mode == VIEW_FULL) {
             app->pan_x += mx - app->drag_ox;
             app->pan_y += my - app->drag_oy;
             app->drag_ox = mx;
             app->drag_oy = my;
             app->fit_mode = 0;
+            if (app->layout == LAYOUT_FIT || app->layout == LAYOUT_FIT_LARGE ||
+                app->layout == LAYOUT_FIT_WIDTH || app->layout == LAYOUT_FIT_HEIGHT ||
+                app->layout == LAYOUT_STRETCH)
+                app->layout = LAYOUT_ZOOM_KEEP;
             InvalidateRect(hwnd, NULL, TRUE);
         }
+        if (app->pixel_info)
+            dabom_sample_pixel_at(app, mx, my);
         return 0;
     }
 
     case WM_LBUTTONUP:
-        if (app->dragging) {
+        if (app->dragging || app->nav_dragging) {
             app->dragging = 0;
+            app->nav_dragging = 0;
             ReleaseCapture();
         }
         return 0;
@@ -1290,6 +1858,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_DESTROY:
         if (app->slideshow)
             KillTimer(hwnd, ID_TIMER_SLIDE);
+        dabom_ctxmenu_destroy(app);
         destroy_menubar(app);
         dabom_clear_files(app);
         dabom_wic_shutdown(app);

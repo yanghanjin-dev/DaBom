@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(DaBom VERSION 0.0.5 LANGUAGES C)
+project(DaBom VERSION 0.0.6 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -9,6 +9,8 @@ add_executable(dabom WIN32
   src/image.c
   src/files.c
   src/config.c
+  src/actions.c
+  src/ctxmenu.c
 )
 
 target_include_directories(dabom PRIVATE src)
@@ -18,7 +20,7 @@ if(MSVC)
 endif()
 
 target_link_libraries(dabom PRIVATE
-  user32 gdi32 comctl32 ole32 shell32 windowscodecs uuid comdlg32 dwmapi advapi32 uxtheme
+  user32 gdi32 comctl32 ole32 shell32 windowscodecs uuid comdlg32 dwmapi advapi32 uxtheme winspool
 )
 
 set_target_properties(dabom PROPERTIES
