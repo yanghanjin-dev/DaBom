@@ -473,7 +473,7 @@ static void paint_empty(AppState *app, HDC hdc, const RECT *rc)
 {
     RECT r = *rc;
     const wchar_t *brand = L"DaBom";
-    const wchar_t *ver = DABOM_TITLE_W; /* e.g. DaBom 0.0.2 */
+    const wchar_t *ver = DABOM_TITLE_W; /* e.g. DaBom 0.0.3 */
     const wchar_t *sub = L"사진 폴더를 열어보세요";
     const wchar_t *hint = L"폴더 열기 또는 파일 열기로 이미지를 불러옵니다";
     SIZE sz;

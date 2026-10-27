@@ -41,8 +41,8 @@
 #endif
 
 /* Single source of truth for app version (keep DABOM_VERSION_W in sync). */
-#define DABOM_VERSION   "0.0.2"
-#define DABOM_VERSION_W L"0.0.2"
+#define DABOM_VERSION   "0.0.3"
+#define DABOM_VERSION_W L"0.0.3"
 #define DABOM_TITLE_W   L"DaBom " DABOM_VERSION_W
 
 #define DABOM_MAX_PATH 1024
