@@ -944,21 +944,92 @@ static void create_toolbar(AppState *app)
     app->tb_tracking = 0;
 }
 
+/* ---- Themed 파일 popup (MF_OWNERDRAW + TrackPopupMenu) ---- */
+
+typedef struct {
+    const wchar_t *label;    /* NULL when separator */
+    const wchar_t *shortcut; /* optional right-aligned accelerator */
+} FileMenuOd;
+
+enum {
+    FILE_MENU_SEP_ID = 1 /* non-command id for owner-draw separator row */
+};
+
+/* Popup colors follow Windows Apps mode (not classic unthemed menu chrome). */
+static void file_menu_colors(const AppState *app,
+    COLORREF *bg, COLORREF *text, COLORREF *muted,
+    COLORREF *sep, COLORREF *hot_bg, COLORREF *border)
+{
+    if (app->palette.dark) {
+        *bg     = RGB(0x2D, 0x2D, 0x2D);
+        *text   = RGB(0xFF, 0xFF, 0xFF);
+        *muted  = RGB(0xC0, 0xC0, 0xC0);
+        *sep    = RGB(0x55, 0x55, 0x55);
+        *hot_bg = RGB(0x3D, 0x3D, 0x3D);
+        *border = RGB(0x1A, 0x1A, 0x1A);
+    } else {
+        *bg     = RGB(0xFF, 0xFF, 0xFF);
+        *text   = RGB(0x00, 0x00, 0x00);
+        *muted  = RGB(0x55, 0x55, 0x55);
+        *sep    = RGB(0xD0, 0xD0, 0xD0);
+        *hot_bg = RGB(0xE8, 0xE8, 0xE8);
+        *border = RGB(0xC8, 0xC8, 0xC8);
+    }
+}
+
 static void popup_file_menu(AppState *app, int client_left, int client_bottom)
 {
+    /* Static so MEASUREITEM/DRAWITEM can read via itemData during TrackPopupMenu. */
+    static const FileMenuOd items[] = {
+        { L"폴더 열기",     NULL },
+        { L"파일 열기",     NULL },
+        { L"파일 정보",     L"TAB" },
+        { NULL,             NULL }, /* separator */
+        { L"프로그램 정보", L"F1" },
+        { L"종료",          L"X" },
+    };
+    static const UINT ids[] = {
+        ID_MENU_OPEN_FOLDER,
+        ID_MENU_OPEN_FILES,
+        ID_MENU_FILE_INFO,
+        FILE_MENU_SEP_ID,
+        ID_MENU_ABOUT,
+        ID_MENU_EXIT,
+    };
     HMENU menu;
+    MENUINFO mi;
+    HBRUSH br_back = NULL;
     POINT pt;
     int cmd;
+    int i;
+    COLORREF bg;
 
     menu = CreatePopupMenu();
     if (!menu)
         return;
-    AppendMenuW(menu, MF_STRING, ID_MENU_OPEN_FOLDER, L"폴더 열기");
-    AppendMenuW(menu, MF_STRING, ID_MENU_OPEN_FILES, L"파일 열기");
-    AppendMenuW(menu, MF_STRING, ID_MENU_FILE_INFO, L"파일 정보");
-    AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(menu, MF_STRING, ID_MENU_ABOUT, L"프로그램 정보\tF1");
-    AppendMenuW(menu, MF_STRING, ID_MENU_EXIT, L"종료\tX");
+
+    /* Menu frame fill; items paint themselves in DRAWITEM. */
+    bg = app->palette.dark ? RGB(0x2D, 0x2D, 0x2D) : RGB(0xFF, 0xFF, 0xFF);
+    br_back = CreateSolidBrush(bg);
+    ZeroMemory(&mi, sizeof(mi));
+    mi.cbSize = sizeof(mi);
+    mi.fMask = MIM_BACKGROUND | MIM_STYLE;
+    mi.dwStyle = MNS_CHECKORBMP; /* no radio/check gutter; tighter like reference */
+    mi.hbrBack = br_back;
+    SetMenuInfo(menu, &mi);
+
+    for (i = 0; i < (int)(sizeof(items) / sizeof(items[0])); i++) {
+        MENUITEMINFOW mii;
+        ZeroMemory(&mii, sizeof(mii));
+        mii.cbSize = sizeof(mii);
+        /* Avoid MFT_SEPARATOR alone — it ignores MIIM_DATA and paints classic chrome. */
+        mii.fMask = MIIM_FTYPE | MIIM_ID | MIIM_DATA | MIIM_STATE;
+        mii.fType = MFT_OWNERDRAW;
+        mii.fState = items[i].label ? 0 : (MFS_DISABLED | MFS_GRAYED);
+        mii.wID = ids[i];
+        mii.dwItemData = (ULONG_PTR)&items[i];
+        InsertMenuItemW(menu, (UINT)i, TRUE, &mii);
+    }
 
     pt.x = client_left;
     pt.y = client_bottom;
@@ -967,8 +1038,101 @@ static void popup_file_menu(AppState *app, int client_left, int client_bottom)
         TPM_LEFTALIGN | TPM_TOPALIGN | TPM_LEFTBUTTON | TPM_RETURNCMD,
         pt.x, pt.y, 0, app->hwnd, NULL);
     DestroyMenu(menu);
-    if (cmd)
+    if (br_back)
+        DeleteObject(br_back);
+    if (cmd && cmd != FILE_MENU_SEP_ID)
         SendMessageW(app->hwnd, WM_COMMAND, MAKEWPARAM(cmd, 0), 0);
+}
+
+static void measure_file_menu_item(AppState *app, MEASUREITEMSTRUCT *mis)
+{
+    const FileMenuOd *it = (const FileMenuOd *)mis->itemData;
+    HDC hdc;
+    HFONT oldf;
+    SIZE sz;
+    int pad_x = 14;
+    int gap = 28;
+    int sc_w = 0;
+    int lab_w = 0;
+
+    if (!it) {
+        mis->itemWidth = 160;
+        mis->itemHeight = 28;
+        return;
+    }
+    if (!it->label) {
+        mis->itemWidth = 160;
+        mis->itemHeight = 9;
+        return;
+    }
+
+    hdc = GetDC(app->hwnd);
+    oldf = (HFONT)SelectObject(hdc,
+        app->font_ui ? app->font_ui : GetStockObject(DEFAULT_GUI_FONT));
+    GetTextExtentPoint32W(hdc, it->label, (int)wcslen(it->label), &sz);
+    lab_w = sz.cx;
+    if (it->shortcut) {
+        GetTextExtentPoint32W(hdc, it->shortcut, (int)wcslen(it->shortcut), &sz);
+        sc_w = sz.cx;
+    }
+    SelectObject(hdc, oldf);
+    ReleaseDC(app->hwnd, hdc);
+
+    mis->itemWidth = (UINT)(pad_x + lab_w + (sc_w ? gap + sc_w : 0) + pad_x);
+    mis->itemHeight = 28;
+}
+
+static void draw_file_menu_item(AppState *app, const DRAWITEMSTRUCT *dis)
+{
+    const FileMenuOd *it = (const FileMenuOd *)dis->itemData;
+    COLORREF bg, text, muted, sep, hot, border;
+    RECT rc = dis->rcItem;
+    HDC hdc = dis->hDC;
+    int selected = (dis->itemState & ODS_SELECTED) != 0;
+    HBRUSH br;
+    HFONT oldf;
+
+    file_menu_colors(app, &bg, &text, &muted, &sep, &hot, &border);
+    (void)border;
+
+    if (!it || !it->label) {
+        int mid = (rc.top + rc.bottom) / 2;
+        HPEN pen = CreatePen(PS_SOLID, 1, sep);
+        HPEN oldp = (HPEN)SelectObject(hdc, pen);
+        br = CreateSolidBrush(bg);
+        FillRect(hdc, &rc, br);
+        DeleteObject(br);
+        MoveToEx(hdc, rc.left + 10, mid, NULL);
+        LineTo(hdc, rc.right - 10, mid);
+        SelectObject(hdc, oldp);
+        DeleteObject(pen);
+        return;
+    }
+
+    br = CreateSolidBrush(selected ? hot : bg);
+    FillRect(hdc, &rc, br);
+    DeleteObject(br);
+
+    oldf = (HFONT)SelectObject(hdc,
+        app->font_ui ? app->font_ui : GetStockObject(DEFAULT_GUI_FONT));
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, text);
+    {
+        RECT rlab = rc;
+        rlab.left += 14;
+        rlab.right -= 14;
+        DrawTextW(hdc, it->label, -1, &rlab,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    }
+    if (it->shortcut) {
+        RECT rsc = rc;
+        rsc.left += 14;
+        rsc.right -= 14;
+        SetTextColor(hdc, muted);
+        DrawTextW(hdc, it->shortcut, -1, &rsc,
+            DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    }
+    SelectObject(hdc, oldf);
 }
 
 static void invalidate_toolbar(AppState *app)
@@ -1064,6 +1228,24 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_THEMECHANGED:
         dabom_theme_apply(app, 1);
         return 0;
+
+    case WM_MEASUREITEM: {
+        MEASUREITEMSTRUCT *mis = (MEASUREITEMSTRUCT *)lParam;
+        if (mis && mis->CtlType == ODT_MENU) {
+            measure_file_menu_item(app, mis);
+            return TRUE;
+        }
+        break;
+    }
+
+    case WM_DRAWITEM: {
+        const DRAWITEMSTRUCT *dis = (const DRAWITEMSTRUCT *)lParam;
+        if (dis && dis->CtlType == ODT_MENU) {
+            draw_file_menu_item(app, dis);
+            return TRUE;
+        }
+        break;
+    }
 
     case WM_ERASEBKGND:
         return 1;

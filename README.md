@@ -12,6 +12,7 @@
 - Windows 시스템 UI 글꼴(Explorer와 동일 NONCLIENTMETRICS) 사용
 - Windows 앱 모드 다크/라이트 테마 연동
 - 상단 액션 스트립: 커스텀 페인트 플랫 라벨(**파일** 드롭다운 + 이전|다음|축소|확대|맞춤|원본크기|슬라이드쇼, 세로 구분선; Win32 BUTTON 크롬 없음)
+- **파일** 팝업: owner-draw `TrackPopupMenu` — Apps 라이트(흰 배경·검정 글자) / 다크(`#2D2D2D`·흰 글자), 단축키 우측 정렬
 - 하단 상태줄: 파일명·인덱스 + 해상도·형식·크기·수정 시각
 
 ## 요구 사항
@@ -72,7 +73,7 @@ Explorer와 같은 밀도를 맞추기 위해 `SystemParametersInfo(SPI_GETNONCL
 
 - 툴바·썸네일 라벨: `lfMessageFont`
 - 상태줄: `lfStatusFont`
-- 팝업 메뉴: 시스템 메뉴 글꼴(`TrackPopupMenu`)
+- 팝업 메뉴: owner-draw `TrackPopupMenu` + `lfMessageFont`(Apps 라이트/다크 배경·글자)
 - 브랜드 히로: 메시지 글꼴 높이의 약 3.5배
 - `WM_SETTINGCHANGE` 시 글꼴을 다시 만들어 적용합니다.
 - 독립 pt 오버라이드/`settings.ini`의 `ui_font_size_pt`는 없습니다.
