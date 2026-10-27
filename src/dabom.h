@@ -54,17 +54,13 @@
 #define DABOM_SLIDE_MS 3000
 #define DABOM_ZOOM_MIN 0.1
 #define DABOM_ZOOM_MAX 8.0
-#define DABOM_UI_FONT_PT_DEFAULT 11
-#define DABOM_UI_FONT_PT_MIN 9
-#define DABOM_UI_FONT_PT_MAX 18
-/* Brand hero ≈ 3.5× UI pt (scales with ui_font_size_pt). */
+/* Brand hero ≈ 3.5× system message-font height. */
 #define DABOM_BRAND_FONT_PT_MULT 7
 #define DABOM_BRAND_FONT_PT_DIV  2
 
 enum {
     /* Top strip: dropdown triggers + horizontal actions */
     ID_BTN_FILE = 1001,
-    ID_BTN_FONTSIZE,
     ID_BTN_PREV,
     ID_BTN_NEXT,
     ID_BTN_ZOOM_OUT,
@@ -78,9 +74,6 @@ enum {
     ID_MENU_FILE_INFO,
     ID_MENU_ABOUT,
     ID_MENU_EXIT,
-    /* 글자크기 popup */
-    ID_MENU_FONT_INC = 1121,
-    ID_MENU_FONT_DEC,
     ID_TIMER_SLIDE = 2001
 };
 
@@ -115,9 +108,10 @@ typedef struct {
     HWND toolbar;
     HWND status;      /* left: filename + index */
     HWND status_meta; /* right: dimensions / format / size / date */
-    HFONT font_ui;
+    HFONT font_ui;    /* lfMessageFont — labels, thumbs, separators */
+    HFONT font_status;/* lfStatusFont — status bar */
     HFONT font_brand;
-    HFONT font_btn;
+    HFONT font_btn;   /* lfMessageFont — toolbar buttons */
     HBRUSH br_status; /* status-bar background; recreated on theme change */
     IWICImagingFactory *wic;
 
@@ -145,7 +139,6 @@ typedef struct {
 
     wchar_t last_folder[DABOM_MAX_PATH];
     wchar_t config_path[DABOM_MAX_PATH];
-    int ui_font_size_pt; /* independent UI size; default 11 pt — not Cursor */
 } AppState;
 
 /* image.c */
@@ -167,10 +160,9 @@ void dabom_config_path(AppState *app);
 void dabom_load_settings(AppState *app);
 void dabom_save_settings(AppState *app);
 
-/* fonts (main.c) — true point size via MulDiv(pt, LOGPIXELSY, 72) */
+/* fonts (main.c) — Windows NONCLIENTMETRICS (Explorer-matching DPI) */
 void dabom_create_fonts(AppState *app);
 void dabom_apply_fonts(AppState *app);
-void dabom_set_ui_font_pt(AppState *app, int pt);
 
 /* theme (main.c) — follows Windows Apps color mode (not Cursor) */
 int dabom_apps_use_dark_mode(void);

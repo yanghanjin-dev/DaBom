@@ -9,9 +9,9 @@
 
 - 마우스 휠로 전체 보기 이전·다음
 - **원본크기**(1:1) 맞춤
-- UI 글자크기 독립 설정 (pt, `settings.ini`)
+- Windows 시스템 UI 글꼴(Explorer와 동일 NONCLIENTMETRICS) 사용
 - Windows 앱 모드 다크/라이트 테마 연동
-- 상단 액션 스트립: **파일** / **글자크기** 드롭다운 + 가로 탐색·줌 버튼
+- 상단 액션 스트립: **파일** 드롭다운 + 가로 탐색·줌 버튼
 - 하단 상태줄: 파일명·인덱스 + 해상도·형식·크기·수정 시각
 
 ## 요구 사항
@@ -51,14 +51,12 @@ build\dabom.exe
 ## 기능 (MVP)
 
 1. **파일** 메뉴 — 폴더 열기 / 파일 열기(다중) / 파일 정보 / 프로그램 정보 / 종료
-2. **글자크기** 메뉴 — 글자 크게(+) / 글자 작게(-)
-3. 상단 가로 액션: 이전 | 다음 | 축소 | 확대 | 맞춤 | 원본크기 | 슬라이드쇼
-4. 썸네일 그리드 · 전체 보기(←→↑↓, Esc로 그리드)
-5. 확대·축소(`+`/`-`), **맞춤**(0), **원본크기**(1), 드래그 팬
-6. 하단 상태줄 — 왼쪽 `파일명 (n / total)`, 오른쪽 `날짜 시각  WxH(형식)  크기`
-7. 마지막 폴더 기억: `%APPDATA%\DaBom\settings.ini`
-8. **UI 글자크기** — DaBom 전용(pt, 기본 11). 브랜드 히로는 UI pt의 약 3.5배
-9. **다크/라이트** — Windows 앱 모드 연동(즉시 갱신)
+2. 상단 가로 액션: 이전 | 다음 | 축소 | 확대 | 맞춤 | 원본크기 | 슬라이드쇼
+3. 썸네일 그리드 · 전체 보기(←→↑↓, Esc로 그리드)
+4. 확대·축소(`+`/`-`), **맞춤**(0), **원본크기**(1), 드래그 팬
+5. 하단 상태줄 — 왼쪽 `파일명 (n / total)`, 오른쪽 `날짜 시각  WxH(형식)  크기`
+6. 마지막 폴더 기억: `%APPDATA%\DaBom\settings.ini`
+7. **다크/라이트** — Windows 앱 모드 연동(즉시 갱신)
 
 지원 형식: `jpg`, `jpeg`, `png`, `gif`, `webp`, `bmp` (HEIC 미지원)
 
@@ -68,19 +66,21 @@ build\dabom.exe
 - 라이브 갱신: `WM_SETTINGCHANGE` (`ImmersiveColorSet`) 및 `WM_THEMECHANGED`에서 브러시·색을 다시 만들고 `InvalidateRect`합니다.
 - 선택: 다크 모드에서 `DwmSetWindowAttribute` immersive dark (제목 표시줄).
 
-### UI 글자크기 (`settings.ini`)
+### UI 글꼴 (Windows 시스템)
 
-Cursor 설정을 읽거나 동기화하지 **않습니다**. `%APPDATA%\DaBom\settings.ini`만 사용합니다.
+Explorer와 같은 밀도를 맞추기 위해 `SystemParametersInfo(SPI_GETNONCLIENTMETRICS)`로 시스템 글꼴을 읽습니다.
+
+- 툴바·썸네일 라벨: `lfMessageFont`
+- 상태줄: `lfStatusFont`
+- 팝업 메뉴: 시스템 메뉴 글꼴(`TrackPopupMenu`)
+- 브랜드 히로: 메시지 글꼴 높이의 약 3.5배
+- `WM_SETTINGCHANGE` 시 글꼴을 다시 만들어 적용합니다.
+- 독립 pt 오버라이드/`settings.ini`의 `ui_font_size_pt`는 없습니다.
 
 ```ini
 [DaBom]
 LastFolder=...
-ui_font_size_pt=11
 ```
-
-- 키: `ui_font_size_pt` (허용 범위 9–18, 기본 11)
-- 앱 안 **글자크기** 메뉴(크게/작게)로 바꿀 수 있으며, 변경 시 같은 ini에 저장됩니다.
-- GDI 높이: `lfHeight = -MulDiv(pt, LOGPIXELSY, 72)`
 
 ## 단축키
 
@@ -97,7 +97,6 @@ ui_font_size_pt=11
 | Tab | 파일 정보 |
 | F1 | 프로그램 정보 |
 | X | 종료 |
-| 글자크기 메뉴 | UI 글자크기 조절 (ini에 저장) |
 
 ## 소스 구조
 

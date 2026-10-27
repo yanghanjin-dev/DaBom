@@ -734,14 +734,13 @@ static HWND create_strip_sep(AppState *app, int x)
     return sep;
 }
 
-/* Reference-style top strip: 파일 | 글자크기 | 이전 | … | 슬라이드쇼 */
+/* Reference-style top strip: 파일 | 이전 | … | 슬라이드쇼 */
 static void create_toolbar(AppState *app)
 {
     int i;
     int x = 8;
     struct { int id; const wchar_t *label; int w; } items[] = {
         { ID_BTN_FILE,     L"파일", 56 },
-        { ID_BTN_FONTSIZE, L"글자크기", 72 },
         { ID_BTN_PREV,     L"이전", 52 },
         { ID_BTN_NEXT,     L"다음", 52 },
         { ID_BTN_ZOOM_OUT, L"축소", 48 },
@@ -778,30 +777,6 @@ static void popup_file_menu(AppState *app, HWND anchor)
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(menu, MF_STRING, ID_MENU_ABOUT, L"프로그램 정보\tF1");
     AppendMenuW(menu, MF_STRING, ID_MENU_EXIT, L"종료\tX");
-
-    GetWindowRect(anchor, &rc);
-    pt.x = rc.left;
-    pt.y = rc.bottom;
-    cmd = TrackPopupMenu(menu,
-        TPM_LEFTALIGN | TPM_TOPALIGN | TPM_LEFTBUTTON | TPM_RETURNCMD,
-        pt.x, pt.y, 0, app->hwnd, NULL);
-    DestroyMenu(menu);
-    if (cmd)
-        SendMessageW(app->hwnd, WM_COMMAND, MAKEWPARAM(cmd, 0), 0);
-}
-
-static void popup_font_menu(AppState *app, HWND anchor)
-{
-    HMENU menu;
-    RECT rc;
-    POINT pt;
-    int cmd;
-
-    menu = CreatePopupMenu();
-    if (!menu)
-        return;
-    AppendMenuW(menu, MF_STRING, ID_MENU_FONT_INC, L"글자 크게(+)");
-    AppendMenuW(menu, MF_STRING, ID_MENU_FONT_DEC, L"글자 작게(-)");
 
     GetWindowRect(anchor, &rc);
     pt.x = rc.left;
@@ -866,8 +841,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         app->status_meta = CreateWindowExW(0, L"STATIC", L"",
             WS_CHILD | WS_VISIBLE | SS_RIGHT | SS_CENTERIMAGE,
             0, 0, 100, DABOM_STATUS_H, hwnd, NULL, GetModuleHandleW(NULL), NULL);
-        SendMessageW(app->status, WM_SETFONT, (WPARAM)app->font_ui, TRUE);
-        SendMessageW(app->status_meta, WM_SETFONT, (WPARAM)app->font_ui, TRUE);
+        SendMessageW(app->status, WM_SETFONT, (WPARAM)app->font_status, TRUE);
+        SendMessageW(app->status_meta, WM_SETFONT, (WPARAM)app->font_status, TRUE);
         layout_children(app);
         dabom_update_chrome(app);
         return 0;
@@ -881,6 +856,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         /* Apps dark/light toggle: lParam == L"ImmersiveColorSet". */
         if (lParam && lstrcmpiW((LPCWSTR)lParam, L"ImmersiveColorSet") == 0)
             dabom_theme_apply(app, 1);
+        /* System UI fonts / metrics (SPI_SETNONCLIENTMETRICS, etc.). */
+        dabom_create_fonts(app);
+        dabom_apply_fonts(app);
         return 0;
 
     case WM_THEMECHANGED:
@@ -899,16 +877,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         case ID_BTN_FILE:
             popup_file_menu(app, (HWND)lParam ? (HWND)lParam : GetDlgItem(hwnd, ID_BTN_FILE));
             break;
-        case ID_BTN_FONTSIZE:
-            popup_font_menu(app, (HWND)lParam ? (HWND)lParam : GetDlgItem(hwnd, ID_BTN_FONTSIZE));
-            break;
         case ID_MENU_OPEN_FOLDER: dabom_open_folder_dialog(app); break;
         case ID_MENU_OPEN_FILES:  dabom_open_files_dialog(app); break;
         case ID_MENU_FILE_INFO:   show_file_info(app); break;
         case ID_MENU_ABOUT:       show_about(app); break;
         case ID_MENU_EXIT:        DestroyWindow(hwnd); break;
-        case ID_MENU_FONT_INC:    dabom_set_ui_font_pt(app, app->ui_font_size_pt + 1); break;
-        case ID_MENU_FONT_DEC:    dabom_set_ui_font_pt(app, app->ui_font_size_pt - 1); break;
         case ID_BTN_PREV:   dabom_next(app, -1); break;
         case ID_BTN_NEXT:   dabom_next(app, 1); break;
         case ID_BTN_ZOOM_IN:  dabom_zoom_by(app, 1.25); break;
@@ -1056,41 +1029,35 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
-/* True typographic points → GDI lfHeight (negative = character height). */
-static int pt_to_lfheight(HDC hdc, int points)
+/* Fallback when SPI_GETNONCLIENTMETRICS fails: stock DEFAULT_GUI_FONT. */
+static HFONT dabom_clone_stock_gui_font(void)
 {
-    int dpi = GetDeviceCaps(hdc, LOGPIXELSY);
-    if (dpi <= 0)
-        dpi = 96;
-    return -MulDiv(points, dpi, 72);
+    HFONT stock = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    LOGFONTW lf;
+
+    ZeroMemory(&lf, sizeof(lf));
+    if (stock && GetObjectW(stock, sizeof(lf), &lf))
+        return CreateFontIndirectW(&lf);
+    return CreateFontW(
+        -12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
 }
 
 void dabom_create_fonts(AppState *app)
 {
-    HDC hdc = GetDC(NULL);
-    int ui_pt = app->ui_font_size_pt;
-    int brand_pt;
-    int h_ui, h_btn, h_brand;
-
-    if (ui_pt < DABOM_UI_FONT_PT_MIN)
-        ui_pt = DABOM_UI_FONT_PT_DEFAULT;
-    if (ui_pt > DABOM_UI_FONT_PT_MAX)
-        ui_pt = DABOM_UI_FONT_PT_MAX;
-    app->ui_font_size_pt = ui_pt;
-
-    /* Brand hero ≈ 3.5× UI pt so it scales with the independent setting. */
-    brand_pt = (ui_pt * DABOM_BRAND_FONT_PT_MULT) / DABOM_BRAND_FONT_PT_DIV;
-    if (brand_pt < ui_pt * 3)
-        brand_pt = ui_pt * 3;
-
-    h_ui = pt_to_lfheight(hdc, ui_pt);
-    h_btn = pt_to_lfheight(hdc, ui_pt); /* same ballpark as Agents UI Font Size feel */
-    h_brand = pt_to_lfheight(hdc, brand_pt);
-    ReleaseDC(NULL, hdc);
+    NONCLIENTMETRICSW ncm;
+    LOGFONTW lf_brand;
+    int msg_h, brand_h;
+    int ok;
 
     if (app->font_ui) {
         DeleteObject(app->font_ui);
         app->font_ui = NULL;
+    }
+    if (app->font_status) {
+        DeleteObject(app->font_status);
+        app->font_status = NULL;
     }
     if (app->font_btn) {
         DeleteObject(app->font_btn);
@@ -1101,28 +1068,53 @@ void dabom_create_fonts(AppState *app)
         app->font_brand = NULL;
     }
 
-    app->font_ui = CreateFontW(
-        h_ui, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-    app->font_btn = CreateFontW(
-        h_btn, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-    app->font_brand = CreateFontW(
-        h_brand, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI Semibold");
+    ZeroMemory(&ncm, sizeof(ncm));
+    ncm.cbSize = sizeof(ncm);
+    ok = SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
+    if (!ok) {
+        /* Older layout without iPaddedBorderWidth */
+        ncm.cbSize = sizeof(ncm) - sizeof(int);
+        ok = SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, ncm.cbSize, &ncm, 0);
+    }
+
+    if (ok) {
+        app->font_ui = CreateFontIndirectW(&ncm.lfMessageFont);
+        app->font_btn = CreateFontIndirectW(&ncm.lfMessageFont);
+        app->font_status = CreateFontIndirectW(&ncm.lfStatusFont);
+        lf_brand = ncm.lfMessageFont;
+        msg_h = lf_brand.lfHeight;
+        if (msg_h == 0)
+            msg_h = -12;
+        brand_h = (msg_h * DABOM_BRAND_FONT_PT_MULT) / DABOM_BRAND_FONT_PT_DIV;
+        if (brand_h == 0)
+            brand_h = msg_h * 3;
+        /* Keep sign of lfHeight (negative = character height). */
+        lf_brand.lfHeight = brand_h;
+        lf_brand.lfWeight = FW_BOLD;
+        app->font_brand = CreateFontIndirectW(&lf_brand);
+    } else {
+        app->font_ui = dabom_clone_stock_gui_font();
+        app->font_btn = dabom_clone_stock_gui_font();
+        app->font_status = dabom_clone_stock_gui_font();
+        ZeroMemory(&lf_brand, sizeof(lf_brand));
+        if (app->font_ui)
+            GetObjectW(app->font_ui, sizeof(lf_brand), &lf_brand);
+        msg_h = lf_brand.lfHeight ? lf_brand.lfHeight : -12;
+        lf_brand.lfHeight = (msg_h * DABOM_BRAND_FONT_PT_MULT) / DABOM_BRAND_FONT_PT_DIV;
+        lf_brand.lfWeight = FW_BOLD;
+        app->font_brand = CreateFontIndirectW(&lf_brand);
+    }
 }
 
 void dabom_apply_fonts(AppState *app)
 {
     static const int btn_ids[] = {
-        ID_BTN_FILE, ID_BTN_FONTSIZE, ID_BTN_PREV, ID_BTN_NEXT,
+        ID_BTN_FILE, ID_BTN_PREV, ID_BTN_NEXT,
         ID_BTN_ZOOM_OUT, ID_BTN_ZOOM_IN, ID_BTN_FIT, ID_BTN_ACTUAL,
         ID_BTN_SLIDE
     };
     int i;
+    HWND child;
 
     if (!app->hwnd)
         return;
@@ -1131,26 +1123,22 @@ void dabom_apply_fonts(AppState *app)
         if (btn)
             SendMessageW(btn, WM_SETFONT, (WPARAM)app->font_btn, TRUE);
     }
+    /* Strip separators (STATIC "|") — no fixed IDs; walk children. */
+    for (child = GetWindow(app->hwnd, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
+        wchar_t cls[32];
+        wchar_t txt[8];
+        if (GetClassNameW(child, cls, 32) && lstrcmpiW(cls, L"STATIC") == 0) {
+            if (child == app->status || child == app->status_meta)
+                continue;
+            if (GetWindowTextW(child, txt, 8) == 1 && txt[0] == L'|')
+                SendMessageW(child, WM_SETFONT, (WPARAM)app->font_ui, TRUE);
+        }
+    }
     if (app->status)
-        SendMessageW(app->status, WM_SETFONT, (WPARAM)app->font_ui, TRUE);
+        SendMessageW(app->status, WM_SETFONT, (WPARAM)app->font_status, TRUE);
     if (app->status_meta)
-        SendMessageW(app->status_meta, WM_SETFONT, (WPARAM)app->font_ui, TRUE);
+        SendMessageW(app->status_meta, WM_SETFONT, (WPARAM)app->font_status, TRUE);
     InvalidateRect(app->hwnd, NULL, TRUE);
-}
-
-void dabom_set_ui_font_pt(AppState *app, int pt)
-{
-    if (pt < DABOM_UI_FONT_PT_MIN)
-        pt = DABOM_UI_FONT_PT_MIN;
-    if (pt > DABOM_UI_FONT_PT_MAX)
-        pt = DABOM_UI_FONT_PT_MAX;
-    if (pt == app->ui_font_size_pt)
-        return;
-    app->ui_font_size_pt = pt;
-    dabom_create_fonts(app);
-    dabom_apply_fonts(app);
-    dabom_save_settings(app);
-    dabom_update_chrome(app);
 }
 
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmd, int show)
@@ -1174,7 +1162,6 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmd, int show)
     }
 
     dabom_config_path(&g_app);
-    g_app.ui_font_size_pt = DABOM_UI_FONT_PT_DEFAULT;
     dabom_load_settings(&g_app);
     dabom_create_fonts(&g_app);
     dabom_theme_apply(&g_app, 1); /* startup: Apps light/dark palette */
@@ -1233,6 +1220,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmd, int show)
     }
 
     if (g_app.font_ui) DeleteObject(g_app.font_ui);
+    if (g_app.font_status) DeleteObject(g_app.font_status);
     if (g_app.font_btn) DeleteObject(g_app.font_btn);
     if (g_app.font_brand) DeleteObject(g_app.font_brand);
     if (g_app.br_status) DeleteObject(g_app.br_status);
