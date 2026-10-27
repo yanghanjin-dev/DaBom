@@ -1,0 +1,2 @@
+이전 Electron + Vite + React 구현은 네이티브 C(Win32 + WIC) 앱으로 대체되었습니다.
+소스와 빌드 방법은 README.md 를 참고하세요.
