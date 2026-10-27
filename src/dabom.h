@@ -49,8 +49,9 @@
 #define DABOM_MAX_FILES 8192
 #define DABOM_THUMB 160
 #define DABOM_THUMB_PAD 12
-#define DABOM_TOOLBAR_H 48
+#define DABOM_TOOLBAR_H 40
 #define DABOM_STATUS_H 28
+#define DABOM_TB_MAX 16
 #define DABOM_SLIDE_MS 3000
 #define DABOM_ZOOM_MIN 0.1
 #define DABOM_ZOOM_MAX 8.0
@@ -105,17 +106,25 @@ typedef struct {
 
 typedef struct {
     HWND hwnd;
-    HWND toolbar;
+    HWND toolbar;     /* unused (custom-drawn strip); kept for ABI clarity */
     HWND status;      /* left: filename + index */
     HWND status_meta; /* right: dimensions / format / size / date */
-    HFONT font_ui;    /* lfMessageFont — labels, thumbs, separators */
+    HFONT font_ui;    /* lfMessageFont — labels, thumbs, toolbar */
     HFONT font_status;/* lfStatusFont — status bar */
     HFONT font_brand;
-    HFONT font_btn;   /* lfMessageFont — toolbar buttons */
+    HFONT font_btn;   /* lfMessageFont — kept for theme/font rebuild */
     HBRUSH br_status; /* status-bar background; recreated on theme change */
     IWICImagingFactory *wic;
 
     DabomPalette palette;
+
+    /* Custom-drawn top strip (flat labels; no BUTTON chrome). */
+    RECT tb_rc[DABOM_TB_MAX];
+    int tb_id[DABOM_TB_MAX];
+    int tb_enabled[DABOM_TB_MAX];
+    int tb_count;
+    int tb_hover;     /* -1 = none */
+    int tb_tracking;  /* TrackMouseEvent active */
 
     ImageEntry *files;
     int file_count;
