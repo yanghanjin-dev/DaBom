@@ -148,9 +148,18 @@ static void dabom_on_dpi_changed(AppState *app, UINT dpi, const RECT *suggested)
     InvalidateRect(app->hwnd, NULL, TRUE);
 }
 
+static int menubar_height(const AppState *app)
+{
+    if (!app || app->fullscreen)
+        return 0;
+    return DABOM_SCALE(app, DABOM_MENUBAR_H);
+}
+
 void dabom_get_content_rect(AppState *app, RECT *rc)
 {
     GetClientRect(app->hwnd, rc);
+    /* Reserve client menubar strip so images never paint over labels. */
+    rc->top += menubar_height(app);
     if (!app->fullscreen && app->status && IsWindowVisible(app->status)) {
         RECT sr;
         GetWindowRect(app->status, &sr);
@@ -202,22 +211,22 @@ static void palette_fill(DabomPalette *p, int dark)
 {
     p->dark = dark ? 1 : 0;
     if (dark) {
-        /* Charcoal + warm amber (brand accent stays readable). */
-        p->bg        = RGB(22, 26, 30);
-        p->surface   = RGB(32, 38, 44);
-        p->border    = RGB(52, 60, 68);
-        p->text      = RGB(240, 236, 228);
-        p->muted     = RGB(150, 156, 162);
+        /* Cursor Agents chrome: near-black #1e1e1e strip + charcoal content. */
+        p->bg        = RGB(0x18, 0x18, 0x18);
+        p->surface   = RGB(0x1E, 0x1E, 0x1E); /* menubar + status */
+        p->border    = RGB(0x2B, 0x2B, 0x2B);
+        p->text      = RGB(0xCC, 0xCC, 0xCC);
+        p->muted     = RGB(0x80, 0x80, 0x80);
         p->accent    = RGB(220, 150, 60);
         p->accent_dk = RGB(180, 110, 35);
-        p->grid_bg   = RGB(18, 21, 24);
+        p->grid_bg   = RGB(0x14, 0x14, 0x14);
     } else {
-        /* Light Apps: cool gray surfaces, deeper amber for contrast. */
+        /* Cursor-like light chrome strip; content stays cool gray. */
         p->bg        = RGB(245, 246, 248);
-        p->surface   = RGB(255, 255, 255);
-        p->border    = RGB(200, 205, 212);
-        p->text      = RGB(28, 32, 36);
-        p->muted     = RGB(100, 108, 116);
+        p->surface   = RGB(0xF3, 0xF3, 0xF3);
+        p->border    = RGB(0xE0, 0xE0, 0xE0);
+        p->text      = RGB(0x33, 0x33, 0x33);
+        p->muted     = RGB(0x6A, 0x6A, 0x6A);
         p->accent    = RGB(180, 110, 30);
         p->accent_dk = RGB(150, 90, 25);
         p->grid_bg   = RGB(232, 235, 239);
@@ -257,7 +266,8 @@ void dabom_theme_apply(AppState *app, int force)
     /* Refresh themed popup brushes (파일 + context). */
     {
         MENUINFO mi;
-        COLORREF bg = dark ? RGB(0x2D, 0x2D, 0x2D) : RGB(0xFF, 0xFF, 0xFF);
+        /* Cursor popup: #252526 dark / white light. */
+        COLORREF bg = dark ? RGB(0x25, 0x25, 0x26) : RGB(0xFF, 0xFF, 0xFF);
         if (app->br_menu) {
             DeleteObject(app->br_menu);
             app->br_menu = NULL;
@@ -285,11 +295,8 @@ void dabom_theme_apply(AppState *app, int force)
     app->logo_w = app->logo_h = 0;
     dabom_ensure_logo(app);
 
-    if (app->hwnd) {
+    if (app->hwnd)
         InvalidateRect(app->hwnd, NULL, TRUE);
-        if (app->hmenu)
-            DrawMenuBar(app->hwnd);
-    }
 }
 
 static int status_bar_height(AppState *app)
@@ -1282,6 +1289,8 @@ static void paint_full(AppState *app, HDC hdc, const RECT *rc)
     }
 }
 
+static void paint_menubar(AppState *app, HDC hdc, int w); /* defined below */
+
 static void paint_all(AppState *app)
 {
     PAINTSTRUCT ps;
@@ -1289,7 +1298,8 @@ static void paint_all(AppState *app)
     RECT rc, content;
     HDC mem;
     HBITMAP dib, old;
-    int w, h;
+    int w, h, mh;
+    int saved;
 
     GetClientRect(app->hwnd, &rc);
     w = rc.right - rc.left;
@@ -1304,25 +1314,34 @@ static void paint_all(AppState *app)
     old = (HBITMAP)SelectObject(mem, dib);
 
     dabom_get_content_rect(app, &content);
+    mh = menubar_height(app);
 
-    /* Paint image/content only — status bar is frame chrome (child control). */
+    /* Paint image/content only inside content rect (clip = no cover menubar). */
     {
         HBRUSH br = CreateSolidBrush(app->palette.bg);
         FillRect(mem, &content, br);
         DeleteObject(br);
     }
 
+    saved = SaveDC(mem);
+    IntersectClipRect(mem, content.left, content.top, content.right, content.bottom);
     if (app->mode == VIEW_EMPTY)
         paint_empty(app, mem, &content);
     else if (app->mode == VIEW_GRID)
         paint_grid(app, mem, &content);
     else
         paint_full(app, mem, &content);
+    RestoreDC(mem, saved);
 
+    /* Menubar last so it always sits above any spilled content pixels. */
+    if (mh > 0)
+        paint_menubar(app, mem, w);
+
+    if (mh > 0)
+        BitBlt(hdc, 0, 0, w, mh, mem, 0, 0, SRCCOPY);
     BitBlt(hdc, content.left, content.top,
         content.right - content.left, content.bottom - content.top,
         mem, content.left, content.top, SRCCOPY);
-    (void)w;
     (void)h;
     SelectObject(mem, old);
     DeleteObject(dib);
@@ -1353,7 +1372,7 @@ static int hit_grid_index(AppState *app, int mx, int my)
     return idx;
 }
 
-/* ---- Win32 non-client menubar (SetMenu) + themed 파일 popup ---- */
+/* ---- Custom client menubar (Cursor-like flat strip; themed 파일 popup) ---- */
 
 enum {
     FILE_MENU_SEP_ID = 1 /* non-command id for owner-draw separator row */
@@ -1377,22 +1396,29 @@ static const UINT g_file_ids[] = {
     ID_MENU_EXIT,
 };
 
+typedef struct {
+    int id;               /* 0 = separator */
+    const wchar_t *label; /* NULL for pure sep */
+    int file_chevron;
+} MbDef;
+
 void dabom_menu_colors(const AppState *app,
     COLORREF *bg, COLORREF *text, COLORREF *muted,
     COLORREF *sep, COLORREF *hot_bg, COLORREF *border)
 {
     if (app->palette.dark) {
-        *bg     = RGB(0x2D, 0x2D, 0x2D);
-        *text   = RGB(0xFF, 0xFF, 0xFF);
-        *muted  = RGB(0xC0, 0xC0, 0xC0);
-        *sep    = RGB(0x55, 0x55, 0x55);
-        *hot_bg = RGB(0x3D, 0x3D, 0x3D);
-        *border = RGB(0x1A, 0x1A, 0x1A);
+        /* Cursor Agents dark popup. */
+        *bg     = RGB(0x25, 0x25, 0x26);
+        *text   = RGB(0xCC, 0xCC, 0xCC);
+        *muted  = RGB(0x89, 0x89, 0x89);
+        *sep    = RGB(0x3C, 0x3C, 0x3C);
+        *hot_bg = RGB(0x2A, 0x2D, 0x2E);
+        *border = RGB(0x45, 0x45, 0x45);
     } else {
         *bg     = RGB(0xFF, 0xFF, 0xFF);
-        *text   = RGB(0x00, 0x00, 0x00);
-        *muted  = RGB(0x55, 0x55, 0x55);
-        *sep    = RGB(0xD0, 0xD0, 0xD0);
+        *text   = RGB(0x33, 0x33, 0x33);
+        *muted  = RGB(0x6A, 0x6A, 0x6A);
+        *sep    = RGB(0xE0, 0xE0, 0xE0);
         *hot_bg = RGB(0xE8, 0xE8, 0xE8);
         *border = RGB(0xC8, 0xC8, 0xC8);
     }
@@ -1403,30 +1429,255 @@ static void menu_enable(HMENU menu, UINT id, int on)
     EnableMenuItem(menu, id, MF_BYCOMMAND | (on ? MF_ENABLED : (MF_GRAYED | MF_DISABLED)));
 }
 
-static void dabom_update_menubar(AppState *app)
+static int menubar_item_enabled(AppState *app, int id)
 {
     int has = app->file_count > 0;
-    int zoom_ok = app->mode == VIEW_FULL && app->full_bmp != NULL;
-    const wchar_t *slide;
+    switch (id) {
+    case ID_BTN_FILE:
+        return 1;
+    case ID_BTN_PREV:
+    case ID_BTN_NEXT:
+    case ID_BTN_SLIDE:
+        return has;
+    case ID_BTN_ZOOM_IN:
+    case ID_BTN_ZOOM_OUT:
+    case ID_BTN_FIT:
+    case ID_BTN_ACTUAL:
+        return app->mode == VIEW_FULL && app->full_bmp != NULL;
+    default:
+        return 0;
+    }
+}
 
-    if (!app->hmenu || !app->hwnd)
+static const wchar_t *menubar_item_label(AppState *app, int id, const wchar_t *base)
+{
+    if (id == ID_BTN_SLIDE)
+        return app->slideshow ? L"슬라이드 중지" : L"슬라이드쇼";
+    return base;
+}
+
+static void invalidate_menubar(AppState *app)
+{
+    RECT tr;
+    int mh;
+    if (!app->hwnd || app->fullscreen)
+        return;
+    mh = menubar_height(app);
+    if (mh <= 0)
+        return;
+    GetClientRect(app->hwnd, &tr);
+    tr.bottom = mh;
+    InvalidateRect(app->hwnd, &tr, FALSE);
+}
+
+static void menubar_rebuild_layout(AppState *app, HDC hdc)
+{
+    static const MbDef defs[] = {
+        { ID_BTN_FILE,     L"파일",     1 },
+        { 0,               NULL,        0 },
+        { ID_BTN_PREV,     L"이전",     0 },
+        { 0,               NULL,        0 },
+        { ID_BTN_NEXT,     L"다음",     0 },
+        { 0,               NULL,        0 },
+        { ID_BTN_ZOOM_OUT, L"축소",     0 },
+        { 0,               NULL,        0 },
+        { ID_BTN_ZOOM_IN,  L"확대",     0 },
+        { 0,               NULL,        0 },
+        { ID_BTN_FIT,      L"맞춤",     0 },
+        { 0,               NULL,        0 },
+        { ID_BTN_ACTUAL,   L"원본크기", 0 },
+        { 0,               NULL,        0 },
+        { ID_BTN_SLIDE,    L"슬라이드쇼", 0 },
+    };
+    const int pad_x = DABOM_SCALE(app, 10);
+    const int gap = DABOM_SCALE(app, 2);
+    const int sep_w = DABOM_SCALE(app, 9);
+    const int mh = menubar_height(app);
+    int x = DABOM_SCALE(app, 6);
+    int i, n = 0;
+    HFONT oldf;
+
+    oldf = (HFONT)SelectObject(hdc,
+        app->font_ui ? app->font_ui : GetStockObject(DEFAULT_GUI_FONT));
+    app->tb_count = 0;
+
+    for (i = 0; i < (int)(sizeof(defs) / sizeof(defs[0])); i++) {
+        RECT r;
+        if (n >= DABOM_TB_MAX)
+            break;
+        if (defs[i].id == 0) {
+            r.left = x;
+            r.top = 0;
+            r.right = x + sep_w;
+            r.bottom = mh;
+            app->tb_rc[n] = r;
+            app->tb_id[n] = 0;
+            app->tb_enabled[n] = 0;
+            n++;
+            x += sep_w;
+            continue;
+        }
+        {
+            const wchar_t *lab = menubar_item_label(app, defs[i].id, defs[i].label);
+            SIZE sz;
+            int text_w;
+            GetTextExtentPoint32W(hdc, lab, (int)wcslen(lab), &sz);
+            text_w = sz.cx;
+            if (defs[i].file_chevron)
+                text_w += DABOM_SCALE(app, 12);
+            r.left = x;
+            r.top = 0;
+            r.right = x + pad_x * 2 + text_w;
+            r.bottom = mh;
+            app->tb_rc[n] = r;
+            app->tb_id[n] = defs[i].id;
+            app->tb_enabled[n] = menubar_item_enabled(app, defs[i].id);
+            n++;
+            x = r.right + gap;
+        }
+    }
+    app->tb_count = n;
+    SelectObject(hdc, oldf);
+}
+
+static void menubar_ensure_layout(AppState *app)
+{
+    HDC hdc;
+    if (!app->hwnd)
+        return;
+    hdc = GetDC(app->hwnd);
+    if (!hdc)
+        return;
+    menubar_rebuild_layout(app, hdc);
+    ReleaseDC(app->hwnd, hdc);
+}
+
+static int hit_menubar(AppState *app, int mx, int my)
+{
+    int i;
+    int mh = menubar_height(app);
+    if (mh <= 0 || my < 0 || my >= mh)
+        return -1;
+    if (app->tb_count <= 0)
+        menubar_ensure_layout(app);
+    for (i = 0; i < app->tb_count; i++) {
+        if (app->tb_id[i] == 0)
+            continue;
+        if (mx >= app->tb_rc[i].left && mx < app->tb_rc[i].right &&
+            my >= app->tb_rc[i].top && my < app->tb_rc[i].bottom) {
+            if (!app->tb_enabled[i])
+                return -1;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void paint_menubar(AppState *app, HDC hdc, int w)
+{
+    int mh = menubar_height(app);
+    RECT tr = { 0, 0, w, mh };
+    HBRUSH br;
+    HPEN pen, op;
+    HFONT oldf;
+    int i;
+    COLORREF hover_bg;
+
+    if (mh <= 0)
         return;
 
-    menu_enable(app->hmenu, ID_BTN_PREV, has);
-    menu_enable(app->hmenu, ID_BTN_NEXT, has);
-    menu_enable(app->hmenu, ID_BTN_SLIDE, has);
-    menu_enable(app->hmenu, ID_BTN_ZOOM_IN, zoom_ok);
-    menu_enable(app->hmenu, ID_BTN_ZOOM_OUT, zoom_ok);
-    menu_enable(app->hmenu, ID_BTN_FIT, zoom_ok);
-    menu_enable(app->hmenu, ID_BTN_ACTUAL, zoom_ok);
+    menubar_rebuild_layout(app, hdc);
 
-    if (app->menu_file) {
-        menu_enable(app->menu_file, ID_MENU_FILE_INFO, has);
+    br = CreateSolidBrush(app->palette.surface);
+    FillRect(hdc, &tr, br);
+    DeleteObject(br);
+
+    pen = CreatePen(PS_SOLID, 1, app->palette.border);
+    op = (HPEN)SelectObject(hdc, pen);
+    MoveToEx(hdc, 0, mh - 1, NULL);
+    LineTo(hdc, w, mh - 1);
+    SelectObject(hdc, op);
+    DeleteObject(pen);
+
+    hover_bg = app->palette.dark ? RGB(0x2A, 0x2D, 0x2E) : RGB(0xE8, 0xE8, 0xE8);
+
+    oldf = (HFONT)SelectObject(hdc,
+        app->font_ui ? app->font_ui : GetStockObject(DEFAULT_GUI_FONT));
+    SetBkMode(hdc, TRANSPARENT);
+
+    for (i = 0; i < app->tb_count; i++) {
+        RECT r = app->tb_rc[i];
+        if (app->tb_id[i] == 0) {
+            int sx = (r.left + r.right) / 2;
+            int y0 = r.top + DABOM_SCALE(app, 8);
+            int y1 = r.bottom - DABOM_SCALE(app, 8);
+            HPEN sp = CreatePen(PS_SOLID, 1, app->palette.border);
+            HPEN osp = (HPEN)SelectObject(hdc, sp);
+            MoveToEx(hdc, sx, y0, NULL);
+            LineTo(hdc, sx, y1);
+            SelectObject(hdc, osp);
+            DeleteObject(sp);
+            continue;
+        }
+        {
+            const wchar_t *lab;
+            SIZE sz;
+            int tx, ty;
+            RECT hr;
+            int hot = (i == app->tb_hover && app->tb_enabled[i]);
+
+            if (app->tb_id[i] == ID_BTN_SLIDE)
+                lab = menubar_item_label(app, ID_BTN_SLIDE, L"슬라이드쇼");
+            else if (app->tb_id[i] == ID_BTN_FILE)
+                lab = L"파일";
+            else if (app->tb_id[i] == ID_BTN_PREV)
+                lab = L"이전";
+            else if (app->tb_id[i] == ID_BTN_NEXT)
+                lab = L"다음";
+            else if (app->tb_id[i] == ID_BTN_ZOOM_OUT)
+                lab = L"축소";
+            else if (app->tb_id[i] == ID_BTN_ZOOM_IN)
+                lab = L"확대";
+            else if (app->tb_id[i] == ID_BTN_FIT)
+                lab = L"맞춤";
+            else if (app->tb_id[i] == ID_BTN_ACTUAL)
+                lab = L"원본크기";
+            else
+                lab = L"";
+
+            if (hot) {
+                hr = r;
+                hr.top += DABOM_SCALE(app, 3);
+                hr.bottom -= DABOM_SCALE(app, 4);
+                hr.left += DABOM_SCALE(app, 2);
+                hr.right -= DABOM_SCALE(app, 2);
+                br = CreateSolidBrush(hover_bg);
+                FillRect(hdc, &hr, br);
+                DeleteObject(br);
+            }
+
+            SetTextColor(hdc, app->tb_enabled[i] ? app->palette.text : app->palette.muted);
+            GetTextExtentPoint32W(hdc, lab, (int)wcslen(lab), &sz);
+            tx = r.left + DABOM_SCALE(app, 10);
+            ty = r.top + (mh - sz.cy) / 2;
+            TextOutW(hdc, tx, ty, lab, (int)wcslen(lab));
+
+            if (app->tb_id[i] == ID_BTN_FILE) {
+                const wchar_t *ch = L"▾";
+                SetTextColor(hdc, app->palette.muted);
+                TextOutW(hdc, tx + sz.cx + DABOM_SCALE(app, 4), ty, ch, 1);
+            }
+        }
     }
+    SelectObject(hdc, oldf);
+}
 
-    slide = app->slideshow ? L"슬라이드 중지" : L"슬라이드쇼";
-    ModifyMenuW(app->hmenu, ID_BTN_SLIDE, MF_BYCOMMAND | MF_STRING, ID_BTN_SLIDE, slide);
-    DrawMenuBar(app->hwnd);
+static void menubar_set_hover(AppState *app, int idx)
+{
+    if (app->tb_hover == idx)
+        return;
+    app->tb_hover = idx;
+    invalidate_menubar(app);
 }
 
 static HMENU create_file_popup(AppState *app)
@@ -1440,7 +1691,7 @@ static HMENU create_file_popup(AppState *app)
     if (!menu)
         return NULL;
 
-    bg = app->palette.dark ? RGB(0x2D, 0x2D, 0x2D) : RGB(0xFF, 0xFF, 0xFF);
+    bg = app->palette.dark ? RGB(0x25, 0x25, 0x26) : RGB(0xFF, 0xFF, 0xFF);
     if (app->br_menu) {
         DeleteObject(app->br_menu);
         app->br_menu = NULL;
@@ -1468,51 +1719,64 @@ static HMENU create_file_popup(AppState *app)
     return menu;
 }
 
-/* Real window-frame menubar: 파일 popup + flat top-level view commands. */
+static void popup_file_menu(AppState *app, int client_left, int client_bottom)
+{
+    POINT pt;
+    if (!app->menu_file)
+        app->menu_file = create_file_popup(app);
+    if (!app->menu_file)
+        return;
+    pt.x = client_left;
+    pt.y = client_bottom;
+    ClientToScreen(app->hwnd, &pt);
+    TrackPopupMenu(app->menu_file,
+        TPM_LEFTALIGN | TPM_TOPALIGN | TPM_LEFTBUTTON | TPM_RIGHTBUTTON,
+        pt.x, pt.y, 0, app->hwnd, NULL);
+}
+
+static void dabom_update_menubar(AppState *app)
+{
+    if (app->menu_file)
+        menu_enable(app->menu_file, ID_MENU_FILE_INFO, app->file_count > 0);
+    /* Enable state + 슬라이드 라벨 are painted; refresh strip. */
+    if (app->hwnd && !app->fullscreen)
+        invalidate_menubar(app);
+}
+
+/* Client flat menubar + owner-draw 파일 popup (no Win32 frame SetMenu). */
 static void create_menubar(AppState *app)
 {
-    HMENU bar;
-    HMENU file;
-
-    bar = CreateMenu();
-    if (!bar)
-        return;
-
-    file = create_file_popup(app);
-    if (!file) {
-        DestroyMenu(bar);
-        return;
+    /* Ensure no stock white NC menubar remains. */
+    if (app->hwnd && GetMenu(app->hwnd))
+        SetMenu(app->hwnd, NULL);
+    app->hmenu = NULL;
+    app->tb_count = 0;
+    app->tb_hover = -1;
+    app->tb_tracking = 0;
+    if (app->menu_file) {
+        DestroyMenu(app->menu_file);
+        app->menu_file = NULL;
     }
-
-    AppendMenuW(bar, MF_POPUP, (UINT_PTR)file, L"파일");
-    AppendMenuW(bar, MF_STRING, ID_BTN_PREV, L"이전");
-    AppendMenuW(bar, MF_STRING, ID_BTN_NEXT, L"다음");
-    AppendMenuW(bar, MF_STRING, ID_BTN_ZOOM_OUT, L"축소");
-    AppendMenuW(bar, MF_STRING, ID_BTN_ZOOM_IN, L"확대");
-    AppendMenuW(bar, MF_STRING, ID_BTN_FIT, L"맞춤");
-    AppendMenuW(bar, MF_STRING, ID_BTN_ACTUAL, L"원본크기");
-    AppendMenuW(bar, MF_STRING, ID_BTN_SLIDE, L"슬라이드쇼");
-
-    app->menu_file = file;
-    app->hmenu = bar;
-    SetMenu(app->hwnd, bar);
-    DrawMenuBar(app->hwnd);
+    app->menu_file = create_file_popup(app);
     dabom_update_menubar(app);
 }
 
 static void destroy_menubar(AppState *app)
 {
-    if (app->hwnd && app->hmenu)
+    if (app->hwnd && GetMenu(app->hwnd))
         SetMenu(app->hwnd, NULL);
-    if (app->hmenu) {
-        DestroyMenu(app->hmenu); /* also destroys popup children */
-        app->hmenu = NULL;
+    app->hmenu = NULL;
+    if (app->menu_file) {
+        DestroyMenu(app->menu_file);
         app->menu_file = NULL;
     }
     if (app->br_menu) {
         DeleteObject(app->br_menu);
         app->br_menu = NULL;
     }
+    app->tb_count = 0;
+    app->tb_hover = -1;
+    app->tb_tracking = 0;
 }
 
 void dabom_measure_od_menu(AppState *app, MEASUREITEMSTRUCT *mis)
@@ -1902,6 +2166,20 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
+        case ID_BTN_FILE: {
+            int i;
+            int left = 0;
+            int mh = menubar_height(app);
+            menubar_ensure_layout(app);
+            for (i = 0; i < app->tb_count; i++) {
+                if (app->tb_id[i] == ID_BTN_FILE) {
+                    left = app->tb_rc[i].left;
+                    break;
+                }
+            }
+            popup_file_menu(app, left, mh > 0 ? mh : DABOM_SCALE(app, DABOM_MENUBAR_H));
+            break;
+        }
         case ID_MENU_OPEN_FOLDER: dabom_open_folder_dialog(app); break;
         case ID_MENU_OPEN_FILES:  dabom_open_files_dialog(app); break;
         case ID_MENU_FILE_INFO:   show_file_info(app); break;
@@ -2116,6 +2394,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_LBUTTONDOWN: {
         int mx = GET_X_LPARAM(lParam);
         int my = GET_Y_LPARAM(lParam);
+        int tb = hit_menubar(app, mx, my);
+        if (tb >= 0) {
+            int id = app->tb_id[tb];
+            if (id == ID_BTN_FILE)
+                popup_file_menu(app, app->tb_rc[tb].left, menubar_height(app));
+            else
+                SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(id, 0), 0);
+            return 0;
+        }
         /* Navigator close / drag */
         if (app->mode == VIEW_FULL && app->nav_rc.right > app->nav_rc.left) {
             RECT xbtn;
@@ -2153,6 +2440,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_MOUSEMOVE: {
         int mx = GET_X_LPARAM(lParam);
         int my = GET_Y_LPARAM(lParam);
+        if (!app->tb_tracking && !app->fullscreen) {
+            TRACKMOUSEEVENT tme;
+            ZeroMemory(&tme, sizeof(tme));
+            tme.cbSize = sizeof(tme);
+            tme.dwFlags = TME_LEAVE;
+            tme.hwndTrack = hwnd;
+            TrackMouseEvent(&tme);
+            app->tb_tracking = 1;
+        }
+        menubar_set_hover(app, hit_menubar(app, mx, my));
         if (app->nav_dragging && app->mode == VIEW_FULL) {
             int ddx = mx - app->drag_ox;
             int ddy = my - app->drag_oy;
@@ -2189,6 +2486,23 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     }
 
+    case WM_MOUSELEAVE:
+        app->tb_tracking = 0;
+        menubar_set_hover(app, -1);
+        return 0;
+
+    case WM_SETCURSOR:
+        if (LOWORD(lParam) == HTCLIENT) {
+            POINT pt;
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd, &pt);
+            if (hit_menubar(app, pt.x, pt.y) >= 0) {
+                SetCursor(LoadCursor(NULL, IDC_HAND));
+                return TRUE;
+            }
+        }
+        break;
+
     case WM_LBUTTONUP:
         if (app->dragging || app->nav_dragging) {
             app->dragging = 0;
@@ -2197,10 +2511,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         return 0;
 
-    case WM_LBUTTONDBLCLK:
+    case WM_LBUTTONDBLCLK: {
+        int mx = GET_X_LPARAM(lParam);
+        int my = GET_Y_LPARAM(lParam);
+        if (hit_menubar(app, mx, my) >= 0)
+            return 0;
         if (app->mode == VIEW_FULL)
             dabom_set_mode(app, VIEW_GRID);
         return 0;
+    }
 
     case WM_TIMER:
         if (wParam == ID_TIMER_SLIDE && app->slideshow)

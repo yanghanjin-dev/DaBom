@@ -116,7 +116,7 @@ static HMENU build_od_popup(AppState *app, const CtxDef *defs, int count)
     menu = CreatePopupMenu();
     if (!menu) return NULL;
 
-    bg = app->palette.dark ? RGB(0x2D, 0x2D, 0x2D) : RGB(0xFF, 0xFF, 0xFF);
+    bg = app->palette.dark ? RGB(0x25, 0x25, 0x26) : RGB(0xFF, 0xFF, 0xFF);
     if (!app->br_menu)
         app->br_menu = CreateSolidBrush(bg);
     ZeroMemory(&mi, sizeof(mi));
@@ -179,7 +179,7 @@ void dabom_ctxmenu_create(AppState *app)
     dabom_ctxmenu_destroy(app);
     g_od_n = 0;
 
-    bg = app->palette.dark ? RGB(0x2D, 0x2D, 0x2D) : RGB(0xFF, 0xFF, 0xFF);
+    bg = app->palette.dark ? RGB(0x25, 0x25, 0x26) : RGB(0xFF, 0xFF, 0xFF);
     if (app->br_menu) {
         DeleteObject(app->br_menu);
         app->br_menu = NULL;
@@ -285,7 +285,7 @@ void dabom_ctxmenu_theme(AppState *app)
     COLORREF bg;
     MENUINFO mi;
     if (!app->menu_ctx) return;
-    bg = app->palette.dark ? RGB(0x2D, 0x2D, 0x2D) : RGB(0xFF, 0xFF, 0xFF);
+    bg = app->palette.dark ? RGB(0x25, 0x25, 0x26) : RGB(0xFF, 0xFF, 0xFF);
     if (app->br_menu) {
         DeleteObject(app->br_menu);
         app->br_menu = NULL;

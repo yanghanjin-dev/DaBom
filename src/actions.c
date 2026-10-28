@@ -34,9 +34,8 @@ void dabom_toggle_fullscreen(AppState *app)
         app->fs_placement.length = sizeof(app->fs_placement);
         GetWindowPlacement(hwnd, &app->fs_placement);
         app->fs_style = GetWindowLongW(hwnd, GWL_STYLE);
-        app->fs_menu = GetMenu(hwnd);
-        if (app->fs_menu)
-            SetMenu(hwnd, NULL);
+        /* Client menubar hides via fullscreen flag in dabom_get_content_rect. */
+        app->fs_menu = NULL;
         if (app->status)
             ShowWindow(app->status, SW_HIDE);
 
@@ -54,10 +53,7 @@ void dabom_toggle_fullscreen(AppState *app)
         app->fullscreen = 1;
     } else {
         SetWindowLongW(hwnd, GWL_STYLE, app->fs_style | WS_VISIBLE);
-        if (app->fs_menu) {
-            SetMenu(hwnd, app->fs_menu);
-            app->fs_menu = NULL;
-        }
+        app->fs_menu = NULL;
         if (app->status)
             ShowWindow(app->status, SW_SHOW);
         SetWindowPlacement(hwnd, &app->fs_placement);

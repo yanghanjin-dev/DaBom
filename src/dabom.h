@@ -45,8 +45,8 @@
 #pragma comment(lib, "msimg32.lib")
 #endif
 
-#define DABOM_VERSION   "0.0.8"
-#define DABOM_VERSION_W L"0.0.8"
+#define DABOM_VERSION   "0.0.9"
+#define DABOM_VERSION_W L"0.0.9"
 #define DABOM_TITLE_W   L"DaBom " DABOM_VERSION_W
 
 /* Win32 resources (dabom.rc) */
@@ -60,6 +60,9 @@
 #define DABOM_THUMB 160
 #define DABOM_THUMB_PAD 12
 #define DABOM_STATUS_ID 3001
+/* Client menubar height @96 DPI (Cursor-like strip; not Win32 frame menu). */
+#define DABOM_MENUBAR_H 30
+#define DABOM_TB_MAX 16
 #define DABOM_SLIDE_MS 3000
 #define DABOM_ZOOM_MIN 0.1
 #define DABOM_ZOOM_MAX 8.0
@@ -71,6 +74,7 @@
     MulDiv((int)(v), (int)(((app)->dpi) ? (app)->dpi : DABOM_DPI_DEFAULT), DABOM_DPI_DEFAULT)
 
 enum {
+    ID_BTN_FILE = 1001,
     ID_BTN_PREV = 1002,
     ID_BTN_NEXT,
     ID_BTN_ZOOM_OUT,
@@ -175,6 +179,7 @@ typedef struct {
 typedef struct {
     HWND hwnd;
     UINT dpi; /* window DPI (96 = 100%); Per-Monitor V2 */
+    /* hmenu unused (no Win32 frame menu); menu_file = TrackPopup 파일 메뉴. */
     HMENU hmenu, menu_file, menu_ctx, menu_layout, menu_sort, menu_img, menu_bookmarks;
     HBRUSH br_menu;
     HWND status;
@@ -188,6 +193,14 @@ typedef struct {
     HBITMAP logo_bmp;
     UINT logo_w, logo_h;
     int logo_is_dark; /* matches last loaded theme variant */
+
+    /* Custom client menubar (flat hit-test; Cursor-like dark chrome). */
+    RECT tb_rc[DABOM_TB_MAX];
+    int tb_id[DABOM_TB_MAX];
+    int tb_enabled[DABOM_TB_MAX];
+    int tb_count;
+    int tb_hover;     /* -1 = none */
+    int tb_tracking;  /* TrackMouseEvent active */
 
     ImageEntry *files;
     int file_count, file_cap, current;
@@ -213,7 +226,7 @@ typedef struct {
     int pix_x, pix_y, pix_r, pix_g, pix_b, pix_valid;
     WINDOWPLACEMENT fs_placement;
     LONG fs_style;
-    HMENU fs_menu;
+    HMENU fs_menu; /* legacy; frame menu removed in 0.0.9 */
 
     /* Zoom navigator (bottom-right overview when zoomed beyond fit). */
     int nav_dismissed;   /* user closed with X until next zoom-out-to-fit */
