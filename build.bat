@@ -30,8 +30,18 @@ if defined VCVARS (
     echo [ERROR] vcvars64 failed
     exit /b 1
   )
+  echo [BUILD] dabom.res ^(manifest PerMonitorV2^) ...
+  pushd src
+  rc /nologo /fo ..\build\dabom.res dabom.rc
+  if errorlevel 1 (
+    popd
+    echo [FAIL] rc manifest compile error
+    exit /b 1
+  )
+  popd
   echo [BUILD] dabom.exe ^(MSVC^) ...
-  cl /nologo /W3 /O2 /utf-8 /DUNICODE /D_UNICODE /TC /I src src\main.c src\image.c src\files.c src\config.c src\actions.c src\ctxmenu.c /Fe:build\dabom.exe /Fo:build\ /link /SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup user32.lib gdi32.lib comctl32.lib ole32.lib shell32.lib windowscodecs.lib uuid.lib comdlg32.lib dwmapi.lib advapi32.lib uxtheme.lib winspool.lib
+  rem Manifest already in dabom.res (RT_MANIFEST) — disable linker auto-manifest merge.
+  cl /nologo /W3 /O2 /utf-8 /DUNICODE /D_UNICODE /TC /I src src\main.c src\image.c src\files.c src\config.c src\actions.c src\ctxmenu.c /Fe:build\dabom.exe /Fo:build\ /link /SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup /MANIFEST:NO build\dabom.res user32.lib gdi32.lib comctl32.lib ole32.lib shell32.lib windowscodecs.lib uuid.lib comdlg32.lib dwmapi.lib advapi32.lib uxtheme.lib winspool.lib
   if errorlevel 1 (
     echo [FAIL] compile/link error
     exit /b 1
@@ -51,8 +61,17 @@ if not defined GCC (
 
 for %%G in ("%GCC%") do set "GCCDIR=%%~dpG"
 set "PATH=%GCCDIR%;%PATH%"
+echo [BUILD] dabom.res ^(windres manifest^) ...
+pushd src
+windres -o ..\build\dabom_res.o dabom.rc
+if errorlevel 1 (
+  popd
+  echo [FAIL] windres manifest compile error
+  exit /b 1
+)
+popd
 echo [BUILD] dabom.exe ^(gcc fallback^) ...
-"%GCC%" -municode -DUNICODE -D_UNICODE -O2 -I src -o build\dabom.exe src\main.c src\image.c src\files.c src\config.c src\actions.c src\ctxmenu.c -mwindows -ldwmapi -lcomctl32 -lole32 -lshell32 -lwindowscodecs -luuid -lcomdlg32 -lgdi32 -luser32 -ladvapi32 -loleaut32 -luxtheme -lwinspool
+"%GCC%" -municode -DUNICODE -D_UNICODE -O2 -I src -o build\dabom.exe src\main.c src\image.c src\files.c src\config.c src\actions.c src\ctxmenu.c build\dabom_res.o -mwindows -ldwmapi -lcomctl32 -lole32 -lshell32 -lwindowscodecs -luuid -lcomdlg32 -lgdi32 -luser32 -ladvapi32 -loleaut32 -luxtheme -lwinspool
 if errorlevel 1 (
   echo [FAIL] gcc compile/link error
   exit /b 1

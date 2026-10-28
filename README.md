@@ -1,9 +1,16 @@
 # DaBom
 
-**버전 0.0.6** — Windows 네이티브 **C (Win32 + WIC)** 데스크톱 사진 뷰어입니다.  
+**버전 0.0.7** — Windows 네이티브 **C (Win32 + WIC)** 데스크톱 사진 뷰어입니다.  
 이전 Electron/Vite/React 구현은 이 C 앱으로 대체되었습니다.
 
-앱 버전은 `src/dabom.h`의 `DABOM_VERSION`이 단일 기준이며, 창 제목·빈 화면 부제에 `DaBom 0.0.6`로 표시됩니다.
+앱 버전은 `src/dabom.h`의 `DABOM_VERSION`이 단일 기준이며, 창 제목·빈 화면 부제에 `DaBom 0.0.7`로 표시됩니다.
+
+### 0.0.7 포함
+
+- **Per-Monitor DPI V2** 인식 (매니페스트 `dpiAwareness` + `SetProcessDpiAwarenessContext` 폴백)
+- `WM_DPICHANGED`: 권장 사각형으로 창 크기 조정, NONCLIENTMETRICS 기반 폰트 재생성, 레이아웃/내비게이터/그리드 스케일
+- 이미지 **1:1 = 장치 픽셀** 유지 · 맞춤보기는 클라이언트 픽셀 기준 · 공통 파일 대화상자도 선명(프로세스 DPI 상속)
+- `build.bat` / CMake: `src/dabom.manifest`를 리소스로 임베드 (`rc` / `windres`)
 
 ### 0.0.6 포함
 
@@ -52,6 +59,7 @@ C:\Users\yahaj\SynologyDrive\App\DaBom\build\dabom.exe
 5. Ctrl+휠 줌 + 내비게이터 · 일반 휠 이전/다음
 6. 하단 상태바 — 파일명/인덱스 + 메타 + 배율
 7. `%APPDATA%\DaBom\settings.ini` — LastFolder, SortMode, Layout, PageMode, Smooth, Bookmarks
+8. **Per-Monitor DPI V2** — Explorer처럼 UI/대화상자 선명, 모니터 이동 시 자동 스케일
 
 지원 형식: `jpg`, `jpeg`, `png`, `gif`, `webp`, `bmp` (HEIC 미지원)
 
@@ -82,14 +90,16 @@ C:\Users\yahaj\SynologyDrive\App\DaBom\build\dabom.exe
 ## 소스 구조
 
 ```text
-src/dabom.h    공통 선언
-src/main.c     창·UI·페인팅·입력
-src/ctxmenu.c  우클릭 컨텍스트 메뉴
-src/actions.c  메뉴 액션(저장/인쇄/북마크 등)
-src/image.c    WIC 로드·저장·회전·HDR
-src/files.c    폴더 스캔·정렬·페이지 비트맵
-src/config.c   settings.ini
-build.bat      MSVC/gcc 원클릭 빌드
+src/dabom.h         공통 선언
+src/main.c          창·UI·페인팅·입력·DPI
+src/dabom.manifest  PerMonitorV2 + comctl32 v6
+src/dabom.rc        매니페스트 임베드
+src/ctxmenu.c       우클릭 컨텍스트 메뉴
+src/actions.c       메뉴 액션(저장/인쇄/북마크 등)
+src/image.c         WIC 로드·저장·회전·HDR
+src/files.c         폴더 스캔·정렬·페이지 비트맵
+src/config.c        settings.ini
+build.bat           MSVC/gcc 원클릭 빌드
 ```
 
 ## 기술 스택
@@ -97,3 +107,4 @@ build.bat      MSVC/gcc 원클릭 빌드
 - ISO C / MSVC C (`/TC`) 또는 MSYS2 gcc
 - Win32 API, GDI 표시
 - Windows Imaging Component (WIC)
+- Per-Monitor DPI Awareness V2

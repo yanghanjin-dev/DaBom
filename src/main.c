@@ -10,9 +10,139 @@
 #define DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 19
 #endif
 
+#ifndef WM_DPICHANGED
+#define WM_DPICHANGED 0x02E0
+#endif
+/* DPI_AWARENESS_CONTEXT values as opaque pointers (avoid SDK typedef friction). */
+#define DABOM_DPI_CTX_PER_MONITOR_V2  ((void *)(LONG_PTR)-4)
+#define DABOM_DPI_CTX_PER_MONITOR     ((void *)(LONG_PTR)-3)
+#define DABOM_DPI_CTX_SYSTEM          ((void *)(LONG_PTR)-2)
+
 static AppState g_app;
 
 static void dabom_update_menubar(AppState *app);
+static void layout_statusbar(AppState *app);
+
+/* ---- Per-Monitor DPI V2 ---- */
+
+void dabom_set_dpi_awareness(void)
+{
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    HMODULE shcore;
+
+    /* Win10 1703+: Per-Monitor V2 (sharp text + common file dialogs). */
+    if (user32) {
+        typedef BOOL (WINAPI *PFN_SetProcessDpiAwarenessContext)(void *);
+        PFN_SetProcessDpiAwarenessContext set_ctx =
+            (PFN_SetProcessDpiAwarenessContext)GetProcAddress(
+                user32, "SetProcessDpiAwarenessContext");
+        if (set_ctx) {
+            if (set_ctx(DABOM_DPI_CTX_PER_MONITOR_V2))
+                return;
+            if (set_ctx(DABOM_DPI_CTX_PER_MONITOR))
+                return;
+            if (set_ctx(DABOM_DPI_CTX_SYSTEM))
+                return;
+        }
+    }
+
+    /* Win8.1+: PROCESS_PER_MONITOR_DPI_AWARE */
+    shcore = LoadLibraryW(L"Shcore.dll");
+    if (shcore) {
+        typedef HRESULT (WINAPI *PFN_SetProcessDpiAwareness)(int);
+        PFN_SetProcessDpiAwareness set_aware =
+            (PFN_SetProcessDpiAwareness)GetProcAddress(shcore, "SetProcessDpiAwareness");
+        if (set_aware) {
+            /* PROCESS_PER_MONITOR_DPI_AWARE = 2, PROCESS_SYSTEM_DPI_AWARE = 1 */
+            if (SUCCEEDED(set_aware(2)) || SUCCEEDED(set_aware(1))) {
+                FreeLibrary(shcore);
+                return;
+            }
+        }
+        FreeLibrary(shcore);
+    }
+
+    /* Vista+: system DPI aware */
+    if (user32) {
+        typedef BOOL (WINAPI *PFN_SetProcessDPIAware)(void);
+        PFN_SetProcessDPIAware set_legacy =
+            (PFN_SetProcessDPIAware)GetProcAddress(user32, "SetProcessDPIAware");
+        if (set_legacy)
+            set_legacy();
+    }
+}
+
+UINT dabom_get_dpi(HWND hwnd)
+{
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (hwnd && user32) {
+        typedef UINT (WINAPI *PFN_GetDpiForWindow)(HWND);
+        PFN_GetDpiForWindow get_win =
+            (PFN_GetDpiForWindow)GetProcAddress(user32, "GetDpiForWindow");
+        if (get_win) {
+            UINT d = get_win(hwnd);
+            if (d)
+                return d;
+        }
+    }
+    if (user32) {
+        typedef UINT (WINAPI *PFN_GetDpiForSystem)(void);
+        PFN_GetDpiForSystem get_sys =
+            (PFN_GetDpiForSystem)GetProcAddress(user32, "GetDpiForSystem");
+        if (get_sys) {
+            UINT d = get_sys();
+            if (d)
+                return d;
+        }
+    }
+    {
+        HDC hdc = GetDC(hwnd ? hwnd : NULL);
+        UINT d = 96;
+        if (hdc) {
+            int lx = GetDeviceCaps(hdc, LOGPIXELSX);
+            if (lx > 0) d = (UINT)lx;
+            ReleaseDC(hwnd ? hwnd : NULL, hdc);
+        }
+        return d ? d : DABOM_DPI_DEFAULT;
+    }
+}
+
+static void dabom_free_thumbs(AppState *app)
+{
+    int i;
+    if (!app || !app->files)
+        return;
+    for (i = 0; i < app->file_count; i++)
+        dabom_free_bitmap(&app->files[i].thumb);
+}
+
+static void dabom_on_dpi_changed(AppState *app, UINT dpi, const RECT *suggested)
+{
+    if (!app || !app->hwnd)
+        return;
+    if (dpi < 72) dpi = DABOM_DPI_DEFAULT;
+    app->dpi = dpi;
+
+    if (suggested) {
+        SetWindowPos(app->hwnd, NULL,
+            suggested->left, suggested->top,
+            suggested->right - suggested->left,
+            suggested->bottom - suggested->top,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    /* Fonts from NONCLIENTMETRICS at the new DPI; regenerate thumbs for sharpness. */
+    dabom_create_fonts(app);
+    dabom_apply_fonts(app);
+    dabom_free_thumbs(app);
+
+    if (app->status) {
+        SendMessageW(app->status, WM_SIZE, 0, 0);
+        layout_statusbar(app);
+        InvalidateRect(app->status, NULL, TRUE);
+    }
+    InvalidateRect(app->hwnd, NULL, TRUE);
+}
 
 void dabom_get_content_rect(AppState *app, RECT *rc)
 {
@@ -237,7 +367,7 @@ static void draw_status_part(AppState *app, const DRAWITEMSTRUCT *dis)
         DeleteObject(br);
 
     r = dis->rcItem;
-    InflateRect(&r, -6, 0);
+    InflateRect(&r, -DABOM_SCALE(app, 6), 0);
     SetBkMode(dis->hDC, TRANSPARENT);
     SetTextColor(dis->hDC, app->palette.text);
     if (app->font_status)
@@ -674,12 +804,16 @@ static void paint_empty(AppState *app, HDC hdc, const RECT *rc)
 {
     RECT r = *rc;
     const wchar_t *brand = L"DaBom";
-    const wchar_t *ver = DABOM_TITLE_W; /* e.g. DaBom 0.0.5 */
+    const wchar_t *ver = DABOM_TITLE_W; /* e.g. DaBom 0.0.7 */
     const wchar_t *sub = L"사진 폴더를 열어보세요";
     const wchar_t *hint = L"폴더 열기 또는 파일 열기로 이미지를 불러옵니다";
     SIZE sz;
     int cx = (r.left + r.right) / 2;
     int cy = (r.top + r.bottom) / 2;
+    int y_brand = DABOM_SCALE(app, 80);
+    int y_ver = DABOM_SCALE(app, 18);
+    int y_sub = DABOM_SCALE(app, 12);
+    int y_hint = DABOM_SCALE(app, 40);
 
     {
         HBRUSH br = CreateSolidBrush(app->palette.bg);
@@ -691,25 +825,28 @@ static void paint_empty(AppState *app, HDC hdc, const RECT *rc)
     SelectObject(hdc, app->font_brand);
     SetTextColor(hdc, app->palette.accent);
     GetTextExtentPoint32W(hdc, brand, (int)wcslen(brand), &sz);
-    TextOutW(hdc, cx - sz.cx / 2, cy - 80, brand, (int)wcslen(brand));
+    TextOutW(hdc, cx - sz.cx / 2, cy - y_brand, brand, (int)wcslen(brand));
 
     SelectObject(hdc, app->font_ui);
     SetTextColor(hdc, app->palette.muted);
     GetTextExtentPoint32W(hdc, ver, (int)wcslen(ver), &sz);
-    TextOutW(hdc, cx - sz.cx / 2, cy - 18, ver, (int)wcslen(ver));
+    TextOutW(hdc, cx - sz.cx / 2, cy - y_ver, ver, (int)wcslen(ver));
 
     SetTextColor(hdc, app->palette.text);
     GetTextExtentPoint32W(hdc, sub, (int)wcslen(sub), &sz);
-    TextOutW(hdc, cx - sz.cx / 2, cy + 12, sub, (int)wcslen(sub));
+    TextOutW(hdc, cx - sz.cx / 2, cy + y_sub, sub, (int)wcslen(sub));
 
     SetTextColor(hdc, app->palette.muted);
     GetTextExtentPoint32W(hdc, hint, (int)wcslen(hint), &sz);
-    TextOutW(hdc, cx - sz.cx / 2, cy + 40, hint, (int)wcslen(hint));
+    TextOutW(hdc, cx - sz.cx / 2, cy + y_hint, hint, (int)wcslen(hint));
 }
 
 static void paint_grid(AppState *app, HDC hdc, const RECT *rc)
 {
-    int cell = DABOM_THUMB + DABOM_THUMB_PAD * 2;
+    int thumb = DABOM_SCALE(app, DABOM_THUMB);
+    int pad = DABOM_SCALE(app, DABOM_THUMB_PAD);
+    int label_h = DABOM_SCALE(app, 22);
+    int cell = thumb + pad * 2;
     int cols, rows, i;
     int width = rc->right - rc->left;
     int height = rc->bottom - rc->top;
@@ -736,30 +873,32 @@ static void paint_grid(AppState *app, HDC hdc, const RECT *rc)
     for (i = 0; i < app->file_count; i++) {
         int col = i % cols;
         int row = i / cols;
-        int x = rc->left + col * cell + DABOM_THUMB_PAD;
-        int y = rc->top + row * cell + DABOM_THUMB_PAD - app->scroll_y;
+        int x = rc->left + col * cell + pad;
+        int y = rc->top + row * cell + pad - app->scroll_y;
         RECT cellrc;
         const wchar_t *name;
 
-        if (y + DABOM_THUMB < rc->top || y > rc->bottom)
+        if (y + thumb < rc->top || y > rc->bottom)
             continue;
 
         dabom_ensure_thumb(app, i);
 
-        cellrc.left = x - 4;
-        cellrc.top = y - 4;
-        cellrc.right = x + DABOM_THUMB + 4;
-        cellrc.bottom = y + DABOM_THUMB + 22;
-        RoundRect(hdc, cellrc.left, cellrc.top, cellrc.right, cellrc.bottom, 6, 6);
+        cellrc.left = x - DABOM_SCALE(app, 4);
+        cellrc.top = y - DABOM_SCALE(app, 4);
+        cellrc.right = x + thumb + DABOM_SCALE(app, 4);
+        cellrc.bottom = y + thumb + label_h;
+        RoundRect(hdc, cellrc.left, cellrc.top, cellrc.right, cellrc.bottom,
+            DABOM_SCALE(app, 6), DABOM_SCALE(app, 6));
 
         if (app->files[i].thumb) {
             HDC mem = CreateCompatibleDC(hdc);
             HBITMAP old = (HBITMAP)SelectObject(mem, app->files[i].thumb);
             int tw = app->files[i].thumb_w;
             int th = app->files[i].thumb_h;
-            int dx = x + (DABOM_THUMB - tw) / 2;
-            int dy = y + (DABOM_THUMB - th) / 2;
+            int dx = x + (thumb - tw) / 2;
+            int dy = y + (thumb - th) / 2;
             SetStretchBltMode(hdc, HALFTONE);
+            /* Thumbs are device-pixel bitmaps; 1:1 BitBlt (no logical stretch). */
             BitBlt(hdc, dx, dy, tw, th, mem, 0, 0, SRCCOPY);
             SelectObject(mem, old);
             DeleteDC(mem);
@@ -768,7 +907,8 @@ static void paint_grid(AppState *app, HDC hdc, const RECT *rc)
         name = wcsrchr(app->files[i].path, L'\\');
         name = name ? name + 1 : app->files[i].path;
         {
-            RECT tr = { x, y + DABOM_THUMB + 2, x + DABOM_THUMB, y + DABOM_THUMB + 20 };
+            RECT tr = { x, y + thumb + DABOM_SCALE(app, 2),
+                x + thumb, y + thumb + DABOM_SCALE(app, 20) };
             DrawTextW(hdc, name, -1, &tr, DT_CENTER | DT_END_ELLIPSIS | DT_SINGLELINE);
         }
     }
@@ -848,7 +988,11 @@ static int nav_should_show(AppState *app, int cw, int ch, int dw, int dh)
 
 static void paint_navigator(AppState *app, HDC hdc, const RECT *rc, int dx, int dy, int dw, int dh)
 {
-    const int nav_w = 160, nav_h = 120, pad = 10, title_h = 18;
+    const int nav_w = DABOM_SCALE(app, 160);
+    const int nav_h = DABOM_SCALE(app, 120);
+    const int pad = DABOM_SCALE(app, 10);
+    const int title_h = DABOM_SCALE(app, 18);
+    const int inset = DABOM_SCALE(app, 6);
     RECT box, xbtn, thumb;
     int cw = rc->right - rc->left;
     int ch = rc->bottom - rc->top;
@@ -877,17 +1021,17 @@ static void paint_navigator(AppState *app, HDC hdc, const RECT *rc, int dx, int 
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, app->palette.text);
     if (app->font_ui) SelectObject(hdc, app->font_ui);
-    TextOutW(hdc, box.left + 6, box.top + 2, L"탐색", 2);
-    xbtn.left = box.right - 18;
-    xbtn.top = box.top + 2;
-    xbtn.right = box.right - 4;
-    xbtn.bottom = box.top + title_h - 2;
+    TextOutW(hdc, box.left + inset, box.top + DABOM_SCALE(app, 2), L"탐색", 2);
+    xbtn.left = box.right - DABOM_SCALE(app, 18);
+    xbtn.top = box.top + DABOM_SCALE(app, 2);
+    xbtn.right = box.right - DABOM_SCALE(app, 4);
+    xbtn.bottom = box.top + title_h - DABOM_SCALE(app, 2);
     DrawTextW(hdc, L"X", 1, &xbtn, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-    thumb.left = box.left + 6;
+    thumb.left = box.left + inset;
     thumb.top = box.top + title_h;
-    thumb.right = box.right - 6;
-    thumb.bottom = box.bottom - 6;
+    thumb.right = box.right - inset;
+    thumb.bottom = box.bottom - inset;
     tw = thumb.right - thumb.left;
     th = thumb.bottom - thumb.top;
     ts = (double)tw / (double)app->full_w;
@@ -992,7 +1136,8 @@ static void paint_full(AppState *app, HDC hdc, const RECT *rc)
         SelectObject(hdc, app->font_ui);
         {
             const wchar_t *err = L"이미지를 불러올 수 없습니다.";
-            TextOutW(hdc, rc->left + 24, rc->top + 24, err, (int)wcslen(err));
+            TextOutW(hdc, rc->left + DABOM_SCALE(app, 24),
+                rc->top + DABOM_SCALE(app, 24), err, (int)wcslen(err));
         }
         return;
     }
@@ -1078,7 +1223,8 @@ static void paint_full(AppState *app, HDC hdc, const RECT *rc)
         SelectObject(hdc, app->font_ui);
         {
             const wchar_t *err = L"이미지를 불러올 수 없습니다.";
-            TextOutW(hdc, rc->left + 24, rc->top + 24, err, (int)wcslen(err));
+            TextOutW(hdc, rc->left + DABOM_SCALE(app, 24),
+                rc->top + DABOM_SCALE(app, 24), err, (int)wcslen(err));
         }
         return;
     }
@@ -1095,10 +1241,10 @@ static void paint_full(AppState *app, HDC hdc, const RECT *rc)
         _snwprintf(tip, 64, L"(%d,%d) RGB(%d,%d,%d)",
             app->pix_x, app->pix_y, app->pix_r, app->pix_g, app->pix_b);
         tip[63] = 0;
-        tr.left = rc->left + 12;
-        tr.top = rc->top + 12;
-        tr.right = tr.left + 280;
-        tr.bottom = tr.top + 28;
+        tr.left = rc->left + DABOM_SCALE(app, 12);
+        tr.top = rc->top + DABOM_SCALE(app, 12);
+        tr.right = tr.left + DABOM_SCALE(app, 280);
+        tr.bottom = tr.top + DABOM_SCALE(app, 28);
         {
             HBRUSH b = CreateSolidBrush(app->palette.surface);
             FillRect(hdc, &tr, b);
@@ -1162,7 +1308,7 @@ static void paint_all(AppState *app)
 static int hit_grid_index(AppState *app, int mx, int my)
 {
     RECT rc;
-    int cell = DABOM_THUMB + DABOM_THUMB_PAD * 2;
+    int cell = DABOM_SCALE(app, DABOM_THUMB) + DABOM_SCALE(app, DABOM_THUMB_PAD) * 2;
     int cols, col, row, idx;
     dabom_get_content_rect(app, &rc);
     if (my < rc.top || my > rc.bottom)
@@ -1350,19 +1496,19 @@ void dabom_measure_od_menu(AppState *app, MEASUREITEMSTRUCT *mis)
     HDC hdc;
     HFONT oldf;
     SIZE sz;
-    int pad_x = 22;
-    int gap = 28;
+    int pad_x = DABOM_SCALE(app, 22);
+    int gap = DABOM_SCALE(app, 28);
     int sc_w = 0;
     int lab_w = 0;
 
     if (!it) {
-        mis->itemWidth = 180;
-        mis->itemHeight = 28;
+        mis->itemWidth = (UINT)DABOM_SCALE(app, 180);
+        mis->itemHeight = (UINT)DABOM_SCALE(app, 28);
         return;
     }
     if (!it->label) {
-        mis->itemWidth = 180;
-        mis->itemHeight = 9;
+        mis->itemWidth = (UINT)DABOM_SCALE(app, 180);
+        mis->itemHeight = (UINT)DABOM_SCALE(app, 9);
         return;
     }
 
@@ -1378,8 +1524,8 @@ void dabom_measure_od_menu(AppState *app, MEASUREITEMSTRUCT *mis)
     SelectObject(hdc, oldf);
     ReleaseDC(app->hwnd, hdc);
 
-    mis->itemWidth = (UINT)(pad_x + lab_w + (sc_w ? gap + sc_w : 0) + 14);
-    mis->itemHeight = 28;
+    mis->itemWidth = (UINT)(pad_x + lab_w + (sc_w ? gap + sc_w : 0) + DABOM_SCALE(app, 14));
+    mis->itemHeight = (UINT)DABOM_SCALE(app, 28);
 }
 
 void dabom_draw_od_menu(AppState *app, const DRAWITEMSTRUCT *dis)
@@ -1424,15 +1570,15 @@ void dabom_draw_od_menu(AppState *app, const DRAWITEMSTRUCT *dis)
     SetTextColor(hdc, text);
     {
         RECT rlab = rc;
-        rlab.left += 22;
-        rlab.right -= 14;
+        rlab.left += DABOM_SCALE(app, 22);
+        rlab.right -= DABOM_SCALE(app, 14);
         DrawTextW(hdc, it->label, -1, &rlab,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     }
     if (it->shortcut) {
         RECT rsc = rc;
-        rsc.left += 22;
-        rsc.right -= 14;
+        rsc.left += DABOM_SCALE(app, 22);
+        rsc.right -= DABOM_SCALE(app, 14);
         SetTextColor(hdc, muted);
         DrawTextW(hdc, it->shortcut, -1, &rsc,
             DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
@@ -1484,7 +1630,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     switch (msg) {
     case WM_CREATE:
         app->hwnd = hwnd;
+        app->dpi = dabom_get_dpi(hwnd);
         if (!app->page_mode) app->page_mode = PAGE_ONE;
+        /* Recreate fonts now that window DPI is known (PerMonitorV2). */
+        dabom_create_fonts(app);
         dabom_theme_apply(app, 1);
         create_menubar(app);
         dabom_ctxmenu_create(app);
@@ -1502,6 +1651,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         dabom_update_chrome(app);
         return 0;
 
+    case WM_DPICHANGED: {
+        /* LOWORD/HIWORD both carry the new DPI; lParam = suggested window rect. */
+        UINT new_dpi = (UINT)HIWORD(wParam);
+        const RECT *suggested = (const RECT *)lParam;
+        if (!new_dpi)
+            new_dpi = (UINT)LOWORD(wParam);
+        dabom_on_dpi_changed(app, new_dpi, suggested);
+        return 0;
+    }
+
     case WM_SIZE:
         layout_statusbar(app);
         InvalidateRect(hwnd, NULL, TRUE);
@@ -1512,6 +1671,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (lParam && lstrcmpiW((LPCWSTR)lParam, L"ImmersiveColorSet") == 0)
             dabom_theme_apply(app, 1);
         /* System UI fonts / metrics (SPI_SETNONCLIENTMETRICS, etc.). */
+        if (app->hwnd)
+            app->dpi = dabom_get_dpi(app->hwnd);
         dabom_create_fonts(app);
         dabom_apply_fonts(app);
         return 0;
@@ -1769,10 +1930,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         /* Navigator close / drag */
         if (app->mode == VIEW_FULL && app->nav_rc.right > app->nav_rc.left) {
             RECT xbtn;
-            xbtn.left = app->nav_rc.right - 18;
-            xbtn.top = app->nav_rc.top + 2;
-            xbtn.right = app->nav_rc.right - 4;
-            xbtn.bottom = app->nav_rc.top + 16;
+            xbtn.left = app->nav_rc.right - DABOM_SCALE(app, 18);
+            xbtn.top = app->nav_rc.top + DABOM_SCALE(app, 2);
+            xbtn.right = app->nav_rc.right - DABOM_SCALE(app, 4);
+            xbtn.bottom = app->nav_rc.top + DABOM_SCALE(app, 16);
             if (mx >= xbtn.left && mx <= xbtn.right && my >= xbtn.top && my <= xbtn.bottom) {
                 app->nav_dismissed = 1;
                 InvalidateRect(hwnd, NULL, TRUE);
@@ -1806,11 +1967,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (app->nav_dragging && app->mode == VIEW_FULL) {
             int ddx = mx - app->drag_ox;
             int ddy = my - app->drag_oy;
-            /* Map navigator drag to pan (opposite direction, scaled). */
+            /* Map navigator drag to pan (opposite direction, DPI-scaled thumb). */
             if (app->view_scale > 0 && app->full_w > 0) {
-                double nav_ts = 140.0 / (double)app->full_w;
-                if ((double)app->full_h * nav_ts > 90.0)
-                    nav_ts = 90.0 / (double)app->full_h;
+                double nav_inner_w = (double)DABOM_SCALE(app, 148);
+                double nav_inner_h = (double)DABOM_SCALE(app, 96);
+                double nav_ts = nav_inner_w / (double)app->full_w;
+                if ((double)app->full_h * nav_ts > nav_inner_h)
+                    nav_ts = nav_inner_h / (double)app->full_h;
                 if (nav_ts > 0) {
                     app->pan_x -= (int)(ddx / nav_ts * app->view_scale);
                     app->pan_y -= (int)(ddy / nav_ts * app->view_scale);
@@ -1892,7 +2055,12 @@ void dabom_create_fonts(AppState *app)
     NONCLIENTMETRICSW ncm;
     LOGFONTW lf_brand;
     int msg_h, brand_h;
-    int ok;
+    int ok = 0;
+    int used_for_dpi = 0;
+    UINT dpi = app->dpi ? app->dpi : DABOM_DPI_DEFAULT;
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    typedef BOOL (WINAPI *PFN_SystemParametersInfoForDpi)(UINT, UINT, PVOID, UINT, UINT);
+    PFN_SystemParametersInfoForDpi spi_dpi = NULL;
 
     if (app->font_ui) {
         DeleteObject(app->font_ui);
@@ -1911,23 +2079,45 @@ void dabom_create_fonts(AppState *app)
         app->font_brand = NULL;
     }
 
+    if (user32)
+        spi_dpi = (PFN_SystemParametersInfoForDpi)GetProcAddress(
+            user32, "SystemParametersInfoForDpi");
+
     ZeroMemory(&ncm, sizeof(ncm));
     ncm.cbSize = sizeof(ncm);
-    ok = SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
+    /* Prefer DPI-specific metrics so fonts match the window's monitor. */
+    if (spi_dpi && spi_dpi(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0, dpi)) {
+        ok = 1;
+        used_for_dpi = 1;
+    }
+    if (!ok)
+        ok = SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
     if (!ok) {
         /* Older layout without iPaddedBorderWidth */
         ncm.cbSize = sizeof(ncm) - sizeof(int);
-        ok = SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, ncm.cbSize, &ncm, 0);
+        if (spi_dpi && spi_dpi(SPI_GETNONCLIENTMETRICS, ncm.cbSize, &ncm, 0, dpi)) {
+            ok = 1;
+            used_for_dpi = 1;
+        }
+        if (!ok)
+            ok = SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, ncm.cbSize, &ncm, 0);
     }
 
     if (ok) {
+        /* Legacy SPI returns primary-monitor fonts — scale lfHeight to window DPI. */
+        if (!used_for_dpi && dpi != DABOM_DPI_DEFAULT) {
+            ncm.lfMessageFont.lfHeight =
+                MulDiv(ncm.lfMessageFont.lfHeight, (int)dpi, DABOM_DPI_DEFAULT);
+            ncm.lfStatusFont.lfHeight =
+                MulDiv(ncm.lfStatusFont.lfHeight, (int)dpi, DABOM_DPI_DEFAULT);
+        }
         app->font_ui = CreateFontIndirectW(&ncm.lfMessageFont);
         app->font_btn = CreateFontIndirectW(&ncm.lfMessageFont);
         app->font_status = CreateFontIndirectW(&ncm.lfStatusFont);
         lf_brand = ncm.lfMessageFont;
         msg_h = lf_brand.lfHeight;
         if (msg_h == 0)
-            msg_h = -12;
+            msg_h = -MulDiv(12, (int)dpi, DABOM_DPI_DEFAULT);
         brand_h = (msg_h * DABOM_BRAND_FONT_PT_MULT) / DABOM_BRAND_FONT_PT_DIV;
         if (brand_h == 0)
             brand_h = msg_h * 3;
@@ -1943,6 +2133,8 @@ void dabom_create_fonts(AppState *app)
         if (app->font_ui)
             GetObjectW(app->font_ui, sizeof(lf_brand), &lf_brand);
         msg_h = lf_brand.lfHeight ? lf_brand.lfHeight : -12;
+        if (dpi != DABOM_DPI_DEFAULT)
+            msg_h = MulDiv(msg_h, (int)dpi, DABOM_DPI_DEFAULT);
         lf_brand.lfHeight = (msg_h * DABOM_BRAND_FONT_PT_MULT) / DABOM_BRAND_FONT_PT_DIV;
         lf_brand.lfWeight = FW_BOLD;
         app->font_brand = CreateFontIndirectW(&lf_brand);
@@ -1966,11 +2158,17 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmd, int show)
     HWND hwnd;
     MSG msg;
     INITCOMMONCONTROLSEX icc;
+    int win_w, win_h;
 
     (void)hPrev;
     (void)cmd;
 
+    /* Must run before any HWND / dialog so common file dialogs stay sharp. */
+    dabom_set_dpi_awareness();
+
     ZeroMemory(&g_app, sizeof(g_app));
+    g_app.dpi = dabom_get_dpi(NULL);
+
     icc.dwSize = sizeof(icc);
     icc.dwICC = ICC_STANDARD_CLASSES | ICC_BAR_CLASSES;
     InitCommonControlsEx(&icc);
@@ -2010,10 +2208,14 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmd, int show)
 
     g_app.mode = VIEW_EMPTY;
 
+    /* Initial size authored at 96 DPI → device pixels for current system DPI. */
+    win_w = DABOM_SCALE(&g_app, 1100);
+    win_h = DABOM_SCALE(&g_app, 740);
+
     hwnd = CreateWindowExW(
         0, L"DaBomPhotoViewer", DABOM_TITLE_W,
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-        CW_USEDEFAULT, CW_USEDEFAULT, 1100, 740,
+        CW_USEDEFAULT, CW_USEDEFAULT, win_w, win_h,
         NULL, NULL, hInst, NULL);
 
     if (!hwnd) {

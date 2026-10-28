@@ -204,12 +204,16 @@ int dabom_scan_folder(AppState *app, const wchar_t *folder)
 void dabom_ensure_thumb(AppState *app, int index)
 {
     UINT w = 0, h = 0;
+    UINT max_side;
     if (index < 0 || index >= app->file_count)
         return;
     if (app->files[index].thumb)
         return;
+    /* Thumb max side in device pixels so grid stays sharp at high DPI. */
+    max_side = (UINT)DABOM_SCALE(app, DABOM_THUMB);
+    if (max_side < 32) max_side = DABOM_THUMB;
     app->files[index].thumb = dabom_load_bitmap(
-        app, app->files[index].path, &w, &h, DABOM_THUMB);
+        app, app->files[index].path, &w, &h, max_side);
     app->files[index].thumb_w = (int)w;
     app->files[index].thumb_h = (int)h;
 }

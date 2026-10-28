@@ -44,8 +44,8 @@
 #pragma comment(lib, "winspool.lib")
 #endif
 
-#define DABOM_VERSION   "0.0.6"
-#define DABOM_VERSION_W L"0.0.6"
+#define DABOM_VERSION   "0.0.7"
+#define DABOM_VERSION_W L"0.0.7"
 #define DABOM_TITLE_W   L"DaBom " DABOM_VERSION_W
 
 #define DABOM_MAX_PATH 1024
@@ -59,6 +59,10 @@
 #define DABOM_ZOOM_MAX 8.0
 #define DABOM_BRAND_FONT_PT_MULT 7
 #define DABOM_BRAND_FONT_PT_DIV  2
+/* Layout constants are authored at 96 DPI; scale with DABOM_SCALE. */
+#define DABOM_DPI_DEFAULT 96
+#define DABOM_SCALE(app, v) \
+    MulDiv((int)(v), (int)(((app)->dpi) ? (app)->dpi : DABOM_DPI_DEFAULT), DABOM_DPI_DEFAULT)
 
 enum {
     ID_BTN_PREV = 1002,
@@ -164,6 +168,7 @@ typedef struct {
 
 typedef struct {
     HWND hwnd;
+    UINT dpi; /* window DPI (96 = 100%); Per-Monitor V2 */
     HMENU hmenu, menu_file, menu_ctx, menu_layout, menu_sort, menu_img, menu_bookmarks;
     HBRUSH br_menu;
     HWND status;
@@ -258,6 +263,8 @@ int dabom_bookmark_add(AppState *app, const wchar_t *path);
 int dabom_bookmark_find(AppState *app, const wchar_t *path);
 
 /* main.c */
+UINT dabom_get_dpi(HWND hwnd);
+void dabom_set_dpi_awareness(void);
 void dabom_create_fonts(AppState *app);
 void dabom_apply_fonts(AppState *app);
 int dabom_apps_use_dark_mode(void);
