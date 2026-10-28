@@ -42,11 +42,17 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "uxtheme.lib")
 #pragma comment(lib, "winspool.lib")
+#pragma comment(lib, "msimg32.lib")
 #endif
 
-#define DABOM_VERSION   "0.0.7"
-#define DABOM_VERSION_W L"0.0.7"
+#define DABOM_VERSION   "0.0.8"
+#define DABOM_VERSION_W L"0.0.8"
 #define DABOM_TITLE_W   L"DaBom " DABOM_VERSION_W
+
+/* Win32 resources (dabom.rc) */
+#define IDI_APPICON     101
+#define IDR_LOGO_LIGHT  201
+#define IDR_LOGO_DARK   202
 
 #define DABOM_MAX_PATH 1024
 #define DABOM_MAX_FILES 8192
@@ -178,6 +184,10 @@ typedef struct {
     HBRUSH br_status;
     IWICImagingFactory *wic;
     DabomPalette palette;
+    HICON hicon_big, hicon_sm;
+    HBITMAP logo_bmp;
+    UINT logo_w, logo_h;
+    int logo_is_dark; /* matches last loaded theme variant */
 
     ImageEntry *files;
     int file_count, file_cap, current;
@@ -230,7 +240,10 @@ typedef struct {
 int dabom_wic_init(AppState *app);
 void dabom_wic_shutdown(AppState *app);
 HBITMAP dabom_load_bitmap(AppState *app, const wchar_t *path, UINT *out_w, UINT *out_h, UINT max_side);
+HBITMAP dabom_load_bitmap_resource(AppState *app, int resid, UINT *out_w, UINT *out_h, UINT max_side);
 void dabom_free_bitmap(HBITMAP *pbmp);
+void dabom_ensure_logo(AppState *app);
+void dabom_draw_logo(AppState *app, HDC hdc, int x, int y, int dest_w, int dest_h);
 HBITMAP dabom_rotate_bitmap_90cw(HBITMAP src, UINT *inout_w, UINT *inout_h);
 HBITMAP dabom_rotate_bitmap_90ccw(HBITMAP src, UINT *inout_w, UINT *inout_h);
 HBITMAP dabom_resize_bitmap(HBITMAP src, UINT src_w, UINT src_h, UINT dst_w, UINT dst_h, int smooth);

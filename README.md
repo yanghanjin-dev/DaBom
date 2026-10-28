@@ -1,9 +1,17 @@
 # DaBom
 
-**버전 0.0.7** — Windows 네이티브 **C (Win32 + WIC)** 데스크톱 사진 뷰어입니다.  
+**버전 0.0.8** — Windows 네이티브 **C (Win32 + WIC)** 데스크톱 사진 뷰어입니다.  
 이전 Electron/Vite/React 구현은 이 C 앱으로 대체되었습니다.
 
-앱 버전은 `src/dabom.h`의 `DABOM_VERSION`이 단일 기준이며, 창 제목·빈 화면 부제에 `DaBom 0.0.7`로 표시됩니다.
+앱 버전은 `src/dabom.h`의 `DABOM_VERSION`이 단일 기준이며, 창 제목·빈 화면 부제에 `DaBom 0.0.8`로 표시됩니다.
+
+### 0.0.8 포함
+
+- **공식 브랜드 로고·앱 아이콘** 적용
+- `assets/` · `src/res/`에 수평 로고(다봄+DaBom)와 멀티 해상도 아이콘 PNG/ICO 보관
+- `dabom.rc` `IDI_APPICON` → Explorer/작업표시줄/제목줄 아이콘 (`LoadImage` / `WM_SETICON` / 창 클래스)
+- 빈 화면 히어로·프로그램 정보에 수평 로고 비트맵 (라이트/다크 테마별, Per-Monitor V2 고해상도)
+- ICO 포함 크기: **16 / 20 / 24 / 32 / 40 / 48 / 64 / 96 / 128 / 256** (필수 16·32·48·256 포함)
 
 ### 0.0.7 포함
 
@@ -60,6 +68,7 @@ C:\Users\yahaj\SynologyDrive\App\DaBom\build\dabom.exe
 6. 하단 상태바 — 파일명/인덱스 + 메타 + 배율
 7. `%APPDATA%\DaBom\settings.ini` — LastFolder, SortMode, Layout, PageMode, Smooth, Bookmarks
 8. **Per-Monitor DPI V2** — Explorer처럼 UI/대화상자 선명, 모니터 이동 시 자동 스케일
+9. **브랜드 로고·앱 아이콘** — 빈 화면·About·exe 아이콘
 
 지원 형식: `jpg`, `jpeg`, `png`, `gif`, `webp`, `bmp` (HEIC 미지원)
 
@@ -90,21 +99,23 @@ C:\Users\yahaj\SynologyDrive\App\DaBom\build\dabom.exe
 ## 소스 구조
 
 ```text
-src/dabom.h         공통 선언
-src/main.c          창·UI·페인팅·입력·DPI
-src/dabom.manifest  PerMonitorV2 + comctl32 v6
-src/dabom.rc        매니페스트 임베드
-src/ctxmenu.c       우클릭 컨텍스트 메뉴
-src/actions.c       메뉴 액션(저장/인쇄/북마크 등)
-src/image.c         WIC 로드·저장·회전·HDR
-src/files.c         폴더 스캔·정렬·페이지 비트맵
-src/config.c        settings.ini
-build.bat           MSVC/gcc 원클릭 빌드
+assets/                 브랜드 원본 (로고·아이콘 PNG/ICO)
+src/res/                RC 임베드용 복사본 (ico + 로고 PNG)
+src/dabom.h             공통 선언 · DABOM_VERSION
+src/main.c              창·UI·페인팅·입력·DPI·About
+src/dabom.manifest      PerMonitorV2 + comctl32 v6
+src/dabom.rc            매니페스트 · IDI_APPICON · 로고 RCDATA
+src/ctxmenu.c           우클릭 컨텍스트 메뉴
+src/actions.c           메뉴 액션(저장/인쇄/북마크 등)
+src/image.c             WIC 로드·저장·회전·HDR·로고
+src/files.c             폴더 스캔·정렬·페이지 비트맵
+src/config.c            settings.ini
+build.bat               MSVC/gcc 원클릭 빌드
 ```
 
 ## 기술 스택
 
 - ISO C / MSVC C (`/TC`) 또는 MSYS2 gcc
-- Win32 API, GDI 표시
+- Win32 API, GDI 표시 (`AlphaBlend` 로고)
 - Windows Imaging Component (WIC)
 - Per-Monitor DPI Awareness V2

@@ -16,3 +16,6 @@ settings.ini
 .env
 *.pem
 *.key
+
+tools/*.exe
+tools/*.pdb

@@ -1,5 +1,6 @@
 #include "dabom.h"
 #include <propidl.h>
+#include <objidl.h>
 
 int dabom_wic_init(AppState *app)
 {
@@ -62,6 +63,180 @@ static HBITMAP create_dib_from_source(IWICBitmapSource *source, UINT *out_w, UIN
     if (out_w) *out_w = width;
     if (out_h) *out_h = height;
     return bmp;
+}
+
+static HBITMAP dabom_load_bitmap_from_stream(AppState *app, IStream *stream,
+    UINT *out_w, UINT *out_h, UINT max_side)
+{
+    IWICBitmapDecoder *decoder = NULL;
+    HRESULT hr;
+    IWICBitmapFrameDecode *frame = NULL;
+    IWICFormatConverter *converter = NULL;
+    IWICBitmapSource *src;
+    IWICBitmapScaler *scaler = NULL;
+    UINT ow = 0, oh = 0;
+    HBITMAP bmp;
+
+    if (!app->wic || !stream)
+        return NULL;
+
+    hr = IWICImagingFactory_CreateDecoderFromStream(
+        app->wic, stream, NULL, WICDecodeMetadataCacheOnDemand, &decoder);
+    if (FAILED(hr) || !decoder)
+        return NULL;
+
+    hr = IWICBitmapDecoder_GetFrame(decoder, 0, &frame);
+    if (FAILED(hr) || !frame) {
+        IWICBitmapDecoder_Release(decoder);
+        return NULL;
+    }
+
+    hr = IWICImagingFactory_CreateFormatConverter(app->wic, &converter);
+    if (FAILED(hr) || !converter) {
+        IWICBitmapFrameDecode_Release(frame);
+        IWICBitmapDecoder_Release(decoder);
+        return NULL;
+    }
+
+    hr = IWICFormatConverter_Initialize(
+        converter, (IWICBitmapSource *)frame,
+        &GUID_WICPixelFormat32bppPBGRA,
+        WICBitmapDitherTypeNone, NULL, 0.0,
+        WICBitmapPaletteTypeCustom);
+    if (FAILED(hr)) {
+        IWICFormatConverter_Release(converter);
+        IWICBitmapFrameDecode_Release(frame);
+        IWICBitmapDecoder_Release(decoder);
+        return NULL;
+    }
+
+    src = (IWICBitmapSource *)converter;
+    IWICBitmapSource_GetSize(src, &ow, &oh);
+    if (max_side > 0 && (ow > max_side || oh > max_side)) {
+        UINT nw = ow, nh = oh;
+        if (ow >= oh) {
+            nw = max_side;
+            nh = (UINT)((ULONGLONG)oh * max_side / ow);
+            if (nh < 1) nh = 1;
+        } else {
+            nh = max_side;
+            nw = (UINT)((ULONGLONG)ow * max_side / oh);
+            if (nw < 1) nw = 1;
+        }
+        hr = IWICImagingFactory_CreateBitmapScaler(app->wic, &scaler);
+        if (SUCCEEDED(hr) && scaler) {
+            hr = IWICBitmapScaler_Initialize(
+                scaler, src, nw, nh, WICBitmapInterpolationModeFant);
+            if (SUCCEEDED(hr))
+                src = (IWICBitmapSource *)scaler;
+        }
+    }
+
+    bmp = create_dib_from_source(src, out_w, out_h);
+    if (scaler) IWICBitmapScaler_Release(scaler);
+    IWICFormatConverter_Release(converter);
+    IWICBitmapFrameDecode_Release(frame);
+    IWICBitmapDecoder_Release(decoder);
+    return bmp;
+}
+
+HBITMAP dabom_load_bitmap_resource(AppState *app, int resid, UINT *out_w, UINT *out_h, UINT max_side)
+{
+    HRSRC hrsrc;
+    HGLOBAL hres;
+    DWORD size;
+    const void *data;
+    HGLOBAL hg;
+    void *locked;
+    IStream *stream = NULL;
+    HBITMAP bmp;
+
+    if (!app || !app->wic)
+        return NULL;
+
+    hrsrc = FindResourceW(NULL, MAKEINTRESOURCEW(resid), RT_RCDATA);
+    if (!hrsrc)
+        return NULL;
+    hres = LoadResource(NULL, hrsrc);
+    if (!hres)
+        return NULL;
+    size = SizeofResource(NULL, hrsrc);
+    data = LockResource(hres);
+    if (!data || size == 0)
+        return NULL;
+
+    hg = GlobalAlloc(GMEM_MOVEABLE, size);
+    if (!hg)
+        return NULL;
+    locked = GlobalLock(hg);
+    if (!locked) {
+        GlobalFree(hg);
+        return NULL;
+    }
+    memcpy(locked, data, size);
+    GlobalUnlock(hg);
+
+    if (FAILED(CreateStreamOnHGlobal(hg, TRUE, &stream)) || !stream) {
+        GlobalFree(hg);
+        return NULL;
+    }
+
+    bmp = dabom_load_bitmap_from_stream(app, stream, out_w, out_h, max_side);
+    IStream_Release(stream); /* also frees hg via fDeleteOnRelease */
+    return bmp;
+}
+
+void dabom_ensure_logo(AppState *app)
+{
+    int want_dark;
+    UINT max_side;
+
+    if (!app || !app->wic)
+        return;
+
+    want_dark = app->palette.dark ? 1 : 0;
+    if (app->logo_bmp && app->logo_is_dark == want_dark)
+        return;
+
+    dabom_free_bitmap(&app->logo_bmp);
+    app->logo_w = app->logo_h = 0;
+    app->logo_is_dark = want_dark;
+
+    /* Keep high-res for Per-Monitor V2 (display ~320@96dpi → up to ~960@300%). */
+    max_side = (UINT)DABOM_SCALE(app, 960);
+    if (max_side < 640) max_side = 640;
+
+    app->logo_bmp = dabom_load_bitmap_resource(
+        app,
+        want_dark ? IDR_LOGO_DARK : IDR_LOGO_LIGHT,
+        &app->logo_w, &app->logo_h,
+        max_side);
+}
+
+void dabom_draw_logo(AppState *app, HDC hdc, int x, int y, int dest_w, int dest_h)
+{
+    HDC mem;
+    BLENDFUNCTION bf;
+    HBITMAP old;
+
+    if (!app || !hdc || dest_w < 1 || dest_h < 1)
+        return;
+    dabom_ensure_logo(app);
+    if (!app->logo_bmp || app->logo_w == 0 || app->logo_h == 0)
+        return;
+
+    mem = CreateCompatibleDC(hdc);
+    if (!mem)
+        return;
+    old = (HBITMAP)SelectObject(mem, app->logo_bmp);
+    bf.BlendOp = AC_SRC_OVER;
+    bf.BlendFlags = 0;
+    bf.SourceConstantAlpha = 255;
+    bf.AlphaFormat = AC_SRC_ALPHA;
+    AlphaBlend(hdc, x, y, dest_w, dest_h,
+        mem, 0, 0, (int)app->logo_w, (int)app->logo_h, bf);
+    SelectObject(mem, old);
+    DeleteDC(mem);
 }
 
 HBITMAP dabom_load_bitmap(AppState *app, const wchar_t *path, UINT *out_w, UINT *out_h, UINT max_side)

@@ -135,6 +135,10 @@ static void dabom_on_dpi_changed(AppState *app, UINT dpi, const RECT *suggested)
     dabom_create_fonts(app);
     dabom_apply_fonts(app);
     dabom_free_thumbs(app);
+    /* Reload high-res logo for the new DPI scale. */
+    dabom_free_bitmap(&app->logo_bmp);
+    app->logo_w = app->logo_h = 0;
+    dabom_ensure_logo(app);
 
     if (app->status) {
         SendMessageW(app->status, WM_SIZE, 0, 0);
@@ -275,6 +279,11 @@ void dabom_theme_apply(AppState *app, int force)
         SendMessageW(app->status, SB_SETBKCOLOR, 0, (LPARAM)app->palette.surface);
         InvalidateRect(app->status, NULL, TRUE);
     }
+
+    /* Theme-specific brand logo (light navy / dark light-ink). */
+    dabom_free_bitmap(&app->logo_bmp);
+    app->logo_w = app->logo_h = 0;
+    dabom_ensure_logo(app);
 
     if (app->hwnd) {
         InvalidateRect(app->hwnd, NULL, TRUE);
@@ -803,17 +812,17 @@ void dabom_open_files_dialog(AppState *app) { open_dialog(app, 0); }
 static void paint_empty(AppState *app, HDC hdc, const RECT *rc)
 {
     RECT r = *rc;
-    const wchar_t *brand = L"DaBom";
-    const wchar_t *ver = DABOM_TITLE_W; /* e.g. DaBom 0.0.7 */
+    const wchar_t *ver = DABOM_TITLE_W; /* e.g. DaBom 0.0.8 */
     const wchar_t *sub = L"사진 폴더를 열어보세요";
     const wchar_t *hint = L"폴더 열기 또는 파일 열기로 이미지를 불러옵니다";
     SIZE sz;
     int cx = (r.left + r.right) / 2;
     int cy = (r.top + r.bottom) / 2;
-    int y_brand = DABOM_SCALE(app, 80);
-    int y_ver = DABOM_SCALE(app, 18);
-    int y_sub = DABOM_SCALE(app, 12);
-    int y_hint = DABOM_SCALE(app, 40);
+    int logo_w = DABOM_SCALE(app, 320);
+    int logo_h;
+    int logo_x, logo_y;
+    int gap = DABOM_SCALE(app, 18);
+    int y_cursor;
 
     {
         HBRUSH br = CreateSolidBrush(app->palette.bg);
@@ -821,24 +830,40 @@ static void paint_empty(AppState *app, HDC hdc, const RECT *rc)
         DeleteObject(br);
     }
 
-    SetBkMode(hdc, TRANSPARENT);
-    SelectObject(hdc, app->font_brand);
-    SetTextColor(hdc, app->palette.accent);
-    GetTextExtentPoint32W(hdc, brand, (int)wcslen(brand), &sz);
-    TextOutW(hdc, cx - sz.cx / 2, cy - y_brand, brand, (int)wcslen(brand));
+    dabom_ensure_logo(app);
+    if (app->logo_bmp && app->logo_w > 0 && app->logo_h > 0) {
+        logo_h = (int)((LONGLONG)logo_w * app->logo_h / app->logo_w);
+        if (logo_h < 1) logo_h = 1;
+        logo_x = cx - logo_w / 2;
+        logo_y = cy - logo_h / 2 - DABOM_SCALE(app, 36);
+        dabom_draw_logo(app, hdc, logo_x, logo_y, logo_w, logo_h);
+        y_cursor = logo_y + logo_h + gap;
+    } else {
+        /* Fallback if resource logo missing. */
+        const wchar_t *brand = L"다봄 · DaBom";
+        SetBkMode(hdc, TRANSPARENT);
+        SelectObject(hdc, app->font_brand);
+        SetTextColor(hdc, app->palette.accent);
+        GetTextExtentPoint32W(hdc, brand, (int)wcslen(brand), &sz);
+        TextOutW(hdc, cx - sz.cx / 2, cy - DABOM_SCALE(app, 80), brand, (int)wcslen(brand));
+        y_cursor = cy - DABOM_SCALE(app, 18);
+    }
 
+    SetBkMode(hdc, TRANSPARENT);
     SelectObject(hdc, app->font_ui);
     SetTextColor(hdc, app->palette.muted);
     GetTextExtentPoint32W(hdc, ver, (int)wcslen(ver), &sz);
-    TextOutW(hdc, cx - sz.cx / 2, cy - y_ver, ver, (int)wcslen(ver));
+    TextOutW(hdc, cx - sz.cx / 2, y_cursor, ver, (int)wcslen(ver));
+    y_cursor += sz.cy + DABOM_SCALE(app, 14);
 
     SetTextColor(hdc, app->palette.text);
     GetTextExtentPoint32W(hdc, sub, (int)wcslen(sub), &sz);
-    TextOutW(hdc, cx - sz.cx / 2, cy + y_sub, sub, (int)wcslen(sub));
+    TextOutW(hdc, cx - sz.cx / 2, y_cursor, sub, (int)wcslen(sub));
+    y_cursor += sz.cy + DABOM_SCALE(app, 10);
 
     SetTextColor(hdc, app->palette.muted);
     GetTextExtentPoint32W(hdc, hint, (int)wcslen(hint), &sz);
-    TextOutW(hdc, cx - sz.cx / 2, cy + y_hint, hint, (int)wcslen(hint));
+    TextOutW(hdc, cx - sz.cx / 2, y_cursor, hint, (int)wcslen(hint));
 }
 
 static void paint_grid(AppState *app, HDC hdc, const RECT *rc)
@@ -1586,14 +1611,166 @@ void dabom_draw_od_menu(AppState *app, const DRAWITEMSTRUCT *dis)
     SelectObject(hdc, oldf);
 }
 
+typedef struct {
+    AppState *app;
+    HWND hwnd;
+} AboutDlg;
+
+static LRESULT CALLBACK AboutWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    AboutDlg *dlg = (AboutDlg *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+
+    switch (msg) {
+    case WM_CREATE: {
+        CREATESTRUCTW *cs = (CREATESTRUCTW *)lParam;
+        HWND btn;
+        dlg = (AboutDlg *)cs->lpCreateParams;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)dlg);
+        dlg->hwnd = hwnd;
+        btn = CreateWindowExW(0, L"BUTTON", L"확인",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+            0, 0, 0, 0, hwnd, (HMENU)(INT_PTR)IDOK, GetModuleHandleW(NULL), NULL);
+        if (btn && dlg->app && dlg->app->font_ui)
+            SendMessageW(btn, WM_SETFONT, (WPARAM)dlg->app->font_ui, TRUE);
+        return 0;
+    }
+    case WM_SIZE: {
+        AppState *app = dlg ? dlg->app : NULL;
+        int bw = app ? DABOM_SCALE(app, 96) : 96;
+        int bh = app ? DABOM_SCALE(app, 28) : 28;
+        int pad = app ? DABOM_SCALE(app, 16) : 16;
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        SetWindowPos(GetDlgItem(hwnd, IDOK), NULL,
+            (rc.right - bw) / 2, rc.bottom - pad - bh, bw, bh,
+            SWP_NOZORDER);
+        return 0;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        AppState *app = dlg ? dlg->app : NULL;
+        RECT rc;
+        const wchar_t *line1 = L"Windows 네이티브 사진 뷰어";
+        const wchar_t *line2 = L"Win32 + WIC";
+        wchar_t ver[64];
+        SIZE sz;
+        int cx, logo_w, logo_h, x, y;
+
+        GetClientRect(hwnd, &rc);
+        if (app) {
+            HBRUSH br = CreateSolidBrush(app->palette.bg);
+            FillRect(hdc, &rc, br);
+            DeleteObject(br);
+
+            _snwprintf(ver, 64, L"DaBom %s", DABOM_VERSION_W);
+            ver[63] = 0;
+            cx = (rc.left + rc.right) / 2;
+            logo_w = DABOM_SCALE(app, 280);
+            dabom_ensure_logo(app);
+            y = DABOM_SCALE(app, 28);
+            if (app->logo_bmp && app->logo_w > 0 && app->logo_h > 0) {
+                logo_h = (int)((LONGLONG)logo_w * app->logo_h / app->logo_w);
+                if (logo_h < 1) logo_h = 1;
+                x = cx - logo_w / 2;
+                dabom_draw_logo(app, hdc, x, y, logo_w, logo_h);
+                y += logo_h + DABOM_SCALE(app, 16);
+            }
+
+            SetBkMode(hdc, TRANSPARENT);
+            SelectObject(hdc, app->font_ui);
+            SetTextColor(hdc, app->palette.text);
+            GetTextExtentPoint32W(hdc, ver, (int)wcslen(ver), &sz);
+            TextOutW(hdc, cx - sz.cx / 2, y, ver, (int)wcslen(ver));
+            y += sz.cy + DABOM_SCALE(app, 10);
+
+            SetTextColor(hdc, app->palette.muted);
+            GetTextExtentPoint32W(hdc, line1, (int)wcslen(line1), &sz);
+            TextOutW(hdc, cx - sz.cx / 2, y, line1, (int)wcslen(line1));
+            y += sz.cy + DABOM_SCALE(app, 4);
+            GetTextExtentPoint32W(hdc, line2, (int)wcslen(line2), &sz);
+            TextOutW(hdc, cx - sz.cx / 2, y, line2, (int)wcslen(line2));
+        }
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_COMMAND:
+        if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        break;
+    case WM_CLOSE:
+        DestroyWindow(hwnd);
+        return 0;
+    case WM_DESTROY:
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
 static void show_about(AppState *app)
 {
-    wchar_t buf[256];
-    _snwprintf(buf, 256,
-        L"DaBom %s\n\nWindows 네이티브 사진 뷰어\nWin32 + WIC",
-        DABOM_VERSION_W);
-    buf[255] = 0;
-    MessageBoxW(app->hwnd, buf, L"프로그램 정보", MB_OK | MB_ICONINFORMATION);
+    static ATOM about_atom = 0;
+    AboutDlg dlg;
+    HWND hwnd;
+    MSG msg;
+    int ww, wh;
+    RECT prc, rc;
+    WNDCLASSEXW wc;
+
+    if (!app || !app->hwnd)
+        return;
+
+    if (!about_atom) {
+        ZeroMemory(&wc, sizeof(wc));
+        wc.cbSize = sizeof(wc);
+        wc.style = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc = AboutWndProc;
+        wc.hInstance = GetModuleHandleW(NULL);
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+        wc.lpszClassName = L"DaBomAbout";
+        wc.hIcon = app->hicon_sm ? app->hicon_sm
+            : (HICON)LoadImageW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(IDI_APPICON),
+                IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
+        about_atom = RegisterClassExW(&wc);
+        if (!about_atom)
+            return;
+    }
+
+    ZeroMemory(&dlg, sizeof(dlg));
+    dlg.app = app;
+    ww = DABOM_SCALE(app, 420);
+    wh = DABOM_SCALE(app, 320);
+    GetWindowRect(app->hwnd, &prc);
+    rc.left = prc.left + ((prc.right - prc.left) - ww) / 2;
+    rc.top = prc.top + ((prc.bottom - prc.top) - wh) / 2;
+
+    EnableWindow(app->hwnd, FALSE);
+    hwnd = CreateWindowExW(
+        WS_EX_DLGMODALFRAME,
+        L"DaBomAbout", L"프로그램 정보",
+        WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_VISIBLE,
+        rc.left, rc.top, ww, wh,
+        app->hwnd, NULL, GetModuleHandleW(NULL), &dlg);
+    if (!hwnd) {
+        EnableWindow(app->hwnd, TRUE);
+        return;
+    }
+
+    SendMessageW(hwnd, WM_SETICON, ICON_SMALL,
+        (LPARAM)(app->hicon_sm ? app->hicon_sm : app->hicon_big));
+    while (IsWindow(hwnd) && GetMessageW(&msg, NULL, 0, 0) > 0) {
+        if (!IsDialogMessageW(hwnd, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    EnableWindow(app->hwnd, TRUE);
+    SetForegroundWindow(app->hwnd);
 }
 
 static void show_file_info(AppState *app)
@@ -1635,6 +1812,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         /* Recreate fonts now that window DPI is known (PerMonitorV2). */
         dabom_create_fonts(app);
         dabom_theme_apply(app, 1);
+        /* Title bar / taskbar icons from embedded IDI_APPICON. */
+        {
+            HINSTANCE hi = ((LPCREATESTRUCTW)lParam)->hInstance;
+            app->hicon_big = (HICON)LoadImageW(hi, MAKEINTRESOURCEW(IDI_APPICON),
+                IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0);
+            app->hicon_sm = (HICON)LoadImageW(hi, MAKEINTRESOURCEW(IDI_APPICON),
+                IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
+            if (app->hicon_big)
+                SendMessageW(hwnd, WM_SETICON, ICON_BIG, (LPARAM)app->hicon_big);
+            if (app->hicon_sm)
+                SendMessageW(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)app->hicon_sm);
+        }
         create_menubar(app);
         dabom_ctxmenu_create(app);
         app->status_left[0] = 0;
@@ -2024,6 +2213,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         dabom_ctxmenu_destroy(app);
         destroy_menubar(app);
         dabom_clear_files(app);
+        dabom_free_bitmap(&app->logo_bmp);
+        app->logo_w = app->logo_h = 0;
+        if (app->hicon_big) {
+            DestroyIcon(app->hicon_big);
+            app->hicon_big = NULL;
+        }
+        if (app->hicon_sm) {
+            DestroyIcon(app->hicon_sm);
+            app->hicon_sm = NULL;
+        }
         dabom_wic_shutdown(app);
         if (app->br_status) {
             DeleteObject(app->br_status);
@@ -2197,8 +2396,13 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmd, int show)
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.lpszClassName = L"DaBomPhotoViewer";
-    wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
-    wc.hIconSm = wc.hIcon;
+    wc.hIcon = LoadIconW(hInst, MAKEINTRESOURCEW(IDI_APPICON));
+    wc.hIconSm = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_APPICON),
+        IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
+    if (!wc.hIcon)
+        wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+    if (!wc.hIconSm)
+        wc.hIconSm = wc.hIcon;
     if (!RegisterClassExW(&wc)) {
         MessageBoxW(NULL, L"창 클래스 등록 실패", L"DaBom", MB_ICONERROR);
         dabom_wic_shutdown(&g_app);

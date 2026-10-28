@@ -41,7 +41,7 @@ if defined VCVARS (
   popd
   echo [BUILD] dabom.exe ^(MSVC^) ...
   rem Manifest already in dabom.res (RT_MANIFEST) — disable linker auto-manifest merge.
-  cl /nologo /W3 /O2 /utf-8 /DUNICODE /D_UNICODE /TC /I src src\main.c src\image.c src\files.c src\config.c src\actions.c src\ctxmenu.c /Fe:build\dabom.exe /Fo:build\ /link /SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup /MANIFEST:NO build\dabom.res user32.lib gdi32.lib comctl32.lib ole32.lib shell32.lib windowscodecs.lib uuid.lib comdlg32.lib dwmapi.lib advapi32.lib uxtheme.lib winspool.lib
+  cl /nologo /W3 /O2 /utf-8 /DUNICODE /D_UNICODE /TC /I src src\main.c src\image.c src\files.c src\config.c src\actions.c src\ctxmenu.c /Fe:build\dabom.exe /Fo:build\ /link /SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup /MANIFEST:NO build\dabom.res user32.lib gdi32.lib comctl32.lib ole32.lib shell32.lib windowscodecs.lib uuid.lib comdlg32.lib dwmapi.lib advapi32.lib uxtheme.lib winspool.lib msimg32.lib
   if errorlevel 1 (
     echo [FAIL] compile/link error
     exit /b 1
@@ -71,7 +71,7 @@ if errorlevel 1 (
 )
 popd
 echo [BUILD] dabom.exe ^(gcc fallback^) ...
-"%GCC%" -municode -DUNICODE -D_UNICODE -O2 -I src -o build\dabom.exe src\main.c src\image.c src\files.c src\config.c src\actions.c src\ctxmenu.c build\dabom_res.o -mwindows -ldwmapi -lcomctl32 -lole32 -lshell32 -lwindowscodecs -luuid -lcomdlg32 -lgdi32 -luser32 -ladvapi32 -loleaut32 -luxtheme -lwinspool
+"%GCC%" -municode -DUNICODE -D_UNICODE -O2 -I src -o build\dabom.exe src\main.c src\image.c src\files.c src\config.c src\actions.c src\ctxmenu.c build\dabom_res.o -mwindows -ldwmapi -lcomctl32 -lole32 -lshell32 -lwindowscodecs -luuid -lcomdlg32 -lgdi32 -luser32 -ladvapi32 -loleaut32 -luxtheme -lwinspool -lmsimg32
 if errorlevel 1 (
   echo [FAIL] gcc compile/link error
   exit /b 1

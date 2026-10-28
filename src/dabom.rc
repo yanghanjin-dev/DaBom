@@ -1,4 +1,4 @@
-/* DaBom Win32 resources — embed application manifest (PerMonitorV2 + comctl32 v6). */
+/* DaBom Win32 resources — manifest, app icon, brand logos. */
 #include <winuser.h>
 
 #ifndef CREATEPROCESS_MANIFEST_RESOURCE_ID
@@ -8,4 +8,13 @@
 #define RT_MANIFEST 24
 #endif
 
+#define IDI_APPICON    101
+#define IDR_LOGO_LIGHT 201
+#define IDR_LOGO_DARK  202
+
 CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "dabom.manifest"
+
+IDI_APPICON ICON "res\\dabom.ico"
+
+IDR_LOGO_LIGHT RCDATA "res\\dabom-logo.png"
+IDR_LOGO_DARK  RCDATA "res\\dabom-logo-dark.png"
