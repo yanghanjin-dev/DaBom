@@ -272,23 +272,14 @@ void dabom_theme_apply(AppState *app, int force)
 
     apply_titlebar_dark(app->hwnd, dark);
 
-    /* Refresh themed popup brushes (파일 + context). */
+    /* Refresh themed popup brushes (context TrackPopup; 파일 is custom WS_POPUP). */
     {
-        MENUINFO mi;
-        /* Cursor popup: #252526 dark / white light. */
         COLORREF bg = dark ? RGB(0x25, 0x25, 0x26) : RGB(0xFF, 0xFF, 0xFF);
         if (app->br_menu) {
             DeleteObject(app->br_menu);
             app->br_menu = NULL;
         }
         app->br_menu = CreateSolidBrush(bg);
-        ZeroMemory(&mi, sizeof(mi));
-        mi.cbSize = sizeof(mi);
-        mi.fMask = MIM_BACKGROUND | MIM_STYLE;
-        mi.dwStyle = MNS_CHECKORBMP;
-        mi.hbrBack = app->br_menu;
-        if (app->menu_file)
-            SetMenuInfo(app->menu_file, &mi);
         dabom_ctxmenu_theme(app);
     }
 
@@ -1485,11 +1476,6 @@ BOOL dabom_track_popup_menu(AppState *app, HMENU menu, UINT flags, int x, int y)
     return r;
 }
 
-static void menu_enable(HMENU menu, UINT id, int on)
-{
-    EnableMenuItem(menu, id, MF_BYCOMMAND | (on ? MF_ENABLED : (MF_GRAYED | MF_DISABLED)));
-}
-
 static int menubar_item_enabled(AppState *app, int id)
 {
     int has = app->file_count > 0;
@@ -1741,70 +1727,438 @@ static void menubar_set_hover(AppState *app, int idx)
     invalidate_menubar(app);
 }
 
-static HMENU create_file_popup(AppState *app)
+enum { FILE_POPUP_MAX = 8 };
+
+/* Custom WS_POPUP 파일 드롭다운 — TrackPopupMenu chrome 없이 Cursor File 메뉴 매칭. */
+typedef struct {
+    AppState *app;
+    int hover; /* row index or -1 */
+    int width, height;
+    int item_y[FILE_POPUP_MAX];
+    int item_h[FILE_POPUP_MAX];
+    int count;
+    UINT chosen;
+    int done;
+} FilePopupState;
+
+static ATOM g_file_popup_atom;
+
+void dabom_paint_menu_row(AppState *app, HDC hdc, const RECT *rc,
+    const MenuOdItem *it, int selected, int checked, int disabled, int left_gutter)
 {
-    HMENU menu;
-    MENUINFO mi;
-    COLORREF bg;
+    COLORREF bg, text, muted, sep, hot, border;
+    int pad_right = DABOM_SCALE(app, 14);
+    int sep_inset = DABOM_SCALE(app, 12);
+    HBRUSH br;
+    HFONT oldf;
+    COLORREF label_c, mute_c;
+    RECT r = *rc;
+
+    dabom_menu_colors(app, &bg, &text, &muted, &sep, &hot, &border);
+    (void)border;
+    label_c = disabled ? muted : text;
+    mute_c = muted;
+
+    br = CreateSolidBrush(bg);
+    FillRect(hdc, &r, br);
+    DeleteObject(br);
+
+    if (!it || !it->label) {
+        int mid = (r.top + r.bottom) / 2;
+        HPEN pen = CreatePen(PS_SOLID, 1, sep);
+        HPEN oldp = (HPEN)SelectObject(hdc, pen);
+        MoveToEx(hdc, r.left + sep_inset, mid, NULL);
+        LineTo(hdc, r.right - sep_inset, mid);
+        SelectObject(hdc, oldp);
+        DeleteObject(pen);
+        return;
+    }
+
+    if (selected && !disabled) {
+        RECT hr = r;
+        int rad = DABOM_SCALE(app, 4);
+        HRGN rgn;
+        InflateRect(&hr, -DABOM_SCALE(app, 4), -DABOM_SCALE(app, 1));
+        if (hr.right > hr.left && hr.bottom > hr.top) {
+            rgn = CreateRoundRectRgn(hr.left, hr.top, hr.right + 1, hr.bottom + 1,
+                rad * 2, rad * 2);
+            br = CreateSolidBrush(hot);
+            FillRgn(hdc, rgn, br);
+            DeleteObject(br);
+            DeleteObject(rgn);
+        }
+    }
+
+    oldf = (HFONT)SelectObject(hdc,
+        app->font_ui ? app->font_ui : GetStockObject(DEFAULT_GUI_FONT));
+    SetBkMode(hdc, TRANSPARENT);
+
+    if (checked && left_gutter > DABOM_SCALE(app, 14)) {
+        SIZE csz;
+        const wchar_t *mark = L"✓";
+        GetTextExtentPoint32W(hdc, mark, 1, &csz);
+        SetTextColor(hdc, label_c);
+        TextOutW(hdc,
+            r.left + (left_gutter - csz.cx) / 2,
+            r.top + (r.bottom - r.top - csz.cy) / 2,
+            mark, 1);
+    }
+
+    {
+        RECT rlab = r;
+        rlab.left += left_gutter;
+        rlab.right -= pad_right + (it->submenu ? DABOM_SCALE(app, 12) : 0);
+        SetTextColor(hdc, label_c);
+        DrawTextW(hdc, it->label, -1, &rlab,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    }
+
+    if (it->submenu) {
+        RECT rch = r;
+        rch.left = r.right - DABOM_SCALE(app, 22);
+        rch.right = r.right - DABOM_SCALE(app, 8);
+        SetTextColor(hdc, mute_c);
+        DrawTextW(hdc, L"›", -1, &rch,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    } else if (it->shortcut) {
+        RECT rsc = r;
+        rsc.left += left_gutter;
+        rsc.right -= pad_right;
+        SetTextColor(hdc, mute_c);
+        DrawTextW(hdc, it->shortcut, -1, &rsc,
+            DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    }
+    SelectObject(hdc, oldf);
+}
+
+static void file_popup_layout(AppState *app, FilePopupState *st)
+{
+    HDC hdc;
+    HFONT oldf;
+    int i, n;
+    int left_pad = DABOM_SCALE(app, 12);
+    int right_pad = DABOM_SCALE(app, 16);
+    int gap = DABOM_SCALE(app, 40);
+    int item_h = DABOM_SCALE(app, 28);
+    int sep_h = DABOM_SCALE(app, 9);
+    int pad_y = DABOM_SCALE(app, 5);
+    int max_lab = 0, max_sc = 0, y;
+
+    n = (int)(sizeof(g_file_items) / sizeof(g_file_items[0]));
+    if (n > FILE_POPUP_MAX)
+        n = FILE_POPUP_MAX;
+    st->count = n;
+
+    hdc = GetDC(app->hwnd);
+    oldf = (HFONT)SelectObject(hdc,
+        app->font_ui ? app->font_ui : GetStockObject(DEFAULT_GUI_FONT));
+    for (i = 0; i < n; i++) {
+        SIZE sz;
+        if (!g_file_items[i].label)
+            continue;
+        GetTextExtentPoint32W(hdc, g_file_items[i].label,
+            (int)wcslen(g_file_items[i].label), &sz);
+        if (sz.cx > max_lab)
+            max_lab = sz.cx;
+        if (g_file_items[i].shortcut) {
+            GetTextExtentPoint32W(hdc, g_file_items[i].shortcut,
+                (int)wcslen(g_file_items[i].shortcut), &sz);
+            if (sz.cx > max_sc)
+                max_sc = sz.cx;
+        }
+    }
+    SelectObject(hdc, oldf);
+    ReleaseDC(app->hwnd, hdc);
+
+    st->width = left_pad + max_lab + (max_sc ? gap + max_sc : 0) + right_pad;
+    if (st->width < DABOM_SCALE(app, 200))
+        st->width = DABOM_SCALE(app, 200);
+
+    y = pad_y;
+    for (i = 0; i < n; i++) {
+        st->item_y[i] = y;
+        st->item_h[i] = g_file_items[i].label ? item_h : sep_h;
+        y += st->item_h[i];
+    }
+    st->height = y + pad_y;
+}
+
+static int file_popup_hit(const FilePopupState *st, int y)
+{
     int i;
-
-    menu = CreatePopupMenu();
-    if (!menu)
-        return NULL;
-
-    bg = app->palette.dark ? RGB(0x25, 0x25, 0x26) : RGB(0xFF, 0xFF, 0xFF);
-    if (app->br_menu) {
-        DeleteObject(app->br_menu);
-        app->br_menu = NULL;
+    for (i = 0; i < st->count; i++) {
+        if (!g_file_items[i].label)
+            continue;
+        if (y >= st->item_y[i] && y < st->item_y[i] + st->item_h[i])
+            return i;
     }
-    app->br_menu = CreateSolidBrush(bg);
-    ZeroMemory(&mi, sizeof(mi));
-    mi.cbSize = sizeof(mi);
-    mi.fMask = MIM_BACKGROUND | MIM_STYLE;
-    mi.dwStyle = MNS_CHECKORBMP;
-    mi.hbrBack = app->br_menu;
-    SetMenuInfo(menu, &mi);
+    return -1;
+}
 
-    for (i = 0; i < (int)(sizeof(g_file_items) / sizeof(g_file_items[0])); i++) {
-        MENUITEMINFOW mii;
-        ZeroMemory(&mii, sizeof(mii));
-        mii.cbSize = sizeof(mii);
-        /* Avoid MFT_SEPARATOR alone — it ignores MIIM_DATA and paints classic chrome. */
-        mii.fMask = MIIM_FTYPE | MIIM_ID | MIIM_DATA | MIIM_STATE;
-        mii.fType = MFT_OWNERDRAW;
-        mii.fState = g_file_items[i].label ? 0 : (MFS_DISABLED | MFS_GRAYED);
-        mii.wID = g_file_ids[i];
-        mii.dwItemData = (ULONG_PTR)&g_file_items[i];
-        InsertMenuItemW(menu, (UINT)i, TRUE, &mii);
+static int file_popup_row_disabled(AppState *app, int idx)
+{
+    if (idx < 0 || idx >= (int)(sizeof(g_file_ids) / sizeof(g_file_ids[0])))
+        return 1;
+    if (!g_file_items[idx].label)
+        return 1;
+    if (g_file_ids[idx] == ID_MENU_FILE_INFO && app->file_count <= 0)
+        return 1;
+    return 0;
+}
+
+static void file_popup_paint(HWND hwnd, FilePopupState *st)
+{
+    PAINTSTRUCT ps;
+    HDC hdc = BeginPaint(hwnd, &ps);
+    AppState *app = st->app;
+    COLORREF bg, text, muted, sep, hot, border;
+    RECT rc;
+    HBRUSH br;
+    int i;
+    int gutter = DABOM_SCALE(app, 12);
+
+    GetClientRect(hwnd, &rc);
+    dabom_menu_colors(app, &bg, &text, &muted, &sep, &hot, &border);
+    (void)text; (void)muted; (void)sep; (void)hot;
+
+    br = CreateSolidBrush(bg);
+    FillRect(hdc, &rc, br);
+    DeleteObject(br);
+
+    for (i = 0; i < st->count; i++) {
+        RECT ir;
+        int sel = (i == st->hover);
+        int dis = file_popup_row_disabled(app, i);
+        ir.left = 0;
+        ir.right = st->width;
+        ir.top = st->item_y[i];
+        ir.bottom = st->item_y[i] + st->item_h[i];
+        dabom_paint_menu_row(app, hdc, &ir, &g_file_items[i], sel, 0, dis, gutter);
     }
-    return menu;
+
+    /* Thin inner edge so light/dark popups read as a floating panel. */
+    {
+        HPEN pen = CreatePen(PS_SOLID, 1, border);
+        HPEN oldp = (HPEN)SelectObject(hdc, pen);
+        HBRUSH oldb = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
+        RoundRect(hdc, 0, 0, rc.right, rc.bottom,
+            DABOM_SCALE(app, 8), DABOM_SCALE(app, 8));
+        SelectObject(hdc, oldb);
+        SelectObject(hdc, oldp);
+        DeleteObject(pen);
+    }
+    EndPaint(hwnd, &ps);
+}
+
+static void file_popup_apply_chrome(HWND hwnd, AppState *app)
+{
+    COLORREF bg, text, muted, sep, hot, border;
+    DWORD pref = DWMWCP_ROUNDSMALL;
+    dabom_menu_colors(app, &bg, &text, &muted, &sep, &hot, &border);
+    (void)bg; (void)text; (void)muted; (void)sep; (void)hot;
+    /* Prefer DWM round + CS_DROPSHADOW (SetWindowRgn kills the soft shadow). */
+    DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &pref, sizeof(pref));
+    DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &border, sizeof(border));
+}
+
+static LRESULT CALLBACK FilePopupWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    FilePopupState *st = (FilePopupState *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+
+    switch (msg) {
+    case WM_CREATE: {
+        CREATESTRUCTW *cs = (CREATESTRUCTW *)lParam;
+        st = (FilePopupState *)cs->lpCreateParams;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)st);
+        if (st && st->app)
+            file_popup_apply_chrome(hwnd, st->app);
+        return 0;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT:
+        if (st)
+            file_popup_paint(hwnd, st);
+        return 0;
+    case WM_MOUSEMOVE: {
+        int x = GET_X_LPARAM(lParam);
+        int y = GET_Y_LPARAM(lParam);
+        int hit;
+        RECT cr;
+        if (!st) return 0;
+        GetClientRect(hwnd, &cr);
+        if (x < cr.left || x >= cr.right || y < cr.top || y >= cr.bottom)
+            hit = -1;
+        else
+            hit = file_popup_hit(st, y);
+        if (hit != st->hover) {
+            st->hover = hit;
+            InvalidateRect(hwnd, NULL, FALSE);
+        }
+        return 0;
+    }
+    case WM_LBUTTONUP: {
+        int y = GET_Y_LPARAM(lParam);
+        int hit;
+        if (!st) return 0;
+        hit = file_popup_hit(st, y);
+        if (hit >= 0 && !file_popup_row_disabled(st->app, hit)) {
+            st->chosen = g_file_ids[hit];
+            st->done = 1;
+            DestroyWindow(hwnd);
+        }
+        return 0;
+    }
+    case WM_KEYDOWN:
+        if (!st) return 0;
+        if (wParam == VK_ESCAPE) {
+            st->done = 1;
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        if (wParam == VK_DOWN || wParam == VK_UP) {
+            int dir = (wParam == VK_DOWN) ? 1 : -1;
+            int i = st->hover;
+            int n = st->count;
+            int guard = n + 1;
+            while (guard-- > 0) {
+                i += dir;
+                if (i < 0) i = n - 1;
+                if (i >= n) i = 0;
+                if (g_file_items[i].label && !file_popup_row_disabled(st->app, i)) {
+                    st->hover = i;
+                    InvalidateRect(hwnd, NULL, FALSE);
+                    break;
+                }
+            }
+            return 0;
+        }
+        if (wParam == VK_RETURN && st->hover >= 0 &&
+            !file_popup_row_disabled(st->app, st->hover)) {
+            st->chosen = g_file_ids[st->hover];
+            st->done = 1;
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        return 0;
+    case WM_ACTIVATE:
+        if (st && LOWORD(wParam) == WA_INACTIVE) {
+            st->done = 1;
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        break;
+    case WM_DESTROY:
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static void ensure_file_popup_class(void)
+{
+    WNDCLASSW wc;
+    if (g_file_popup_atom)
+        return;
+    ZeroMemory(&wc, sizeof(wc));
+    wc.style = CS_DROPSHADOW | CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
+    wc.lpfnWndProc = FilePopupWndProc;
+    wc.hInstance = GetModuleHandleW(NULL);
+    wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
+    wc.hbrBackground = NULL;
+    wc.lpszClassName = L"DaBomFilePopup";
+    g_file_popup_atom = RegisterClassW(&wc);
 }
 
 static void popup_file_menu(AppState *app, int client_left, int client_bottom)
 {
+    FilePopupState st;
+    HWND hwnd;
     POINT pt;
-    if (!app->menu_file)
-        app->menu_file = create_file_popup(app);
-    if (!app->menu_file)
+    MSG msg;
+    UINT chosen;
+
+    if (!app || !app->hwnd)
         return;
+
+    ensure_file_popup_class();
+    ZeroMemory(&st, sizeof(st));
+    st.app = app;
+    st.hover = -1;
+    file_popup_layout(app, &st);
+
     pt.x = client_left;
     pt.y = client_bottom;
     ClientToScreen(app->hwnd, &pt);
-    dabom_track_popup_menu(app, app->menu_file,
-        TPM_LEFTALIGN | TPM_TOPALIGN | TPM_LEFTBUTTON | TPM_RIGHTBUTTON,
-        pt.x, pt.y);
+
+    hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+        L"DaBomFilePopup", L"",
+        WS_POPUP,
+        pt.x, pt.y, st.width, st.height,
+        app->hwnd, NULL, GetModuleHandleW(NULL), &st);
+    if (!hwnd)
+        return;
+
+    file_popup_apply_chrome(hwnd, app);
+    ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
+    SetForegroundWindow(hwnd);
+    SetCapture(hwnd);
+
+    while (!st.done && IsWindow(hwnd) && GetMessageW(&msg, NULL, 0, 0)) {
+        /* With capture, button messages arrive on hwnd; client coords outside = dismiss. */
+        if (msg.message == WM_LBUTTONDOWN || msg.message == WM_RBUTTONDOWN) {
+            POINT cpt;
+            RECT cr;
+            cpt.x = GET_X_LPARAM(msg.lParam);
+            cpt.y = GET_Y_LPARAM(msg.lParam);
+            if (msg.hwnd == hwnd) {
+                GetClientRect(hwnd, &cr);
+                if (!PtInRect(&cr, cpt)) {
+                    st.done = 1;
+                    DestroyWindow(hwnd);
+                    continue;
+                }
+            } else {
+                ClientToScreen(msg.hwnd ? msg.hwnd : app->hwnd, &cpt);
+                {
+                    RECT wr;
+                    GetWindowRect(hwnd, &wr);
+                    if (!PtInRect(&wr, cpt)) {
+                        st.done = 1;
+                        DestroyWindow(hwnd);
+                        continue;
+                    }
+                }
+            }
+        }
+        if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE) {
+            st.done = 1;
+            DestroyWindow(hwnd);
+            continue;
+        }
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    if (GetCapture() == hwnd)
+        ReleaseCapture();
+    if (IsWindow(hwnd))
+        DestroyWindow(hwnd);
+
+    chosen = st.chosen;
+    if (chosen)
+        SendMessageW(app->hwnd, WM_COMMAND, MAKEWPARAM(chosen, 0), 0);
 }
 
 static void dabom_update_menubar(AppState *app)
 {
-    if (app->menu_file)
-        menu_enable(app->menu_file, ID_MENU_FILE_INFO, app->file_count > 0);
     /* Enable state + 슬라이드 라벨 are painted; refresh strip. */
     if (app->hwnd && !app->fullscreen)
         invalidate_menubar(app);
 }
 
-/* Client flat menubar + owner-draw 파일 popup (no Win32 frame SetMenu). */
+/* Client flat menubar + custom 파일 WS_POPUP (no Win32 frame SetMenu). */
 static void create_menubar(AppState *app)
 {
     /* Ensure no stock white NC menubar remains. */
@@ -1818,7 +2172,6 @@ static void create_menubar(AppState *app)
         DestroyMenu(app->menu_file);
         app->menu_file = NULL;
     }
-    app->menu_file = create_file_popup(app);
     dabom_update_menubar(app);
 }
 
@@ -1855,7 +2208,7 @@ void dabom_measure_od_menu(AppState *app, MEASUREITEMSTRUCT *mis)
 
     if (!it) {
         mis->itemWidth = (UINT)DABOM_SCALE(app, 180);
-        mis->itemHeight = (UINT)DABOM_SCALE(app, 26);
+        mis->itemHeight = (UINT)DABOM_SCALE(app, 28);
         return;
     }
     if (!it->label) {
@@ -1880,103 +2233,18 @@ void dabom_measure_od_menu(AppState *app, MEASUREITEMSTRUCT *mis)
     ReleaseDC(app->hwnd, hdc);
 
     mis->itemWidth = (UINT)(check_col + lab_w + (trail ? gap + trail : 0) + pad_right);
-    mis->itemHeight = (UINT)DABOM_SCALE(app, 26);
+    mis->itemHeight = (UINT)DABOM_SCALE(app, 28);
 }
 
 void dabom_draw_od_menu(AppState *app, const DRAWITEMSTRUCT *dis)
 {
     const MenuOdItem *it = (const MenuOdItem *)dis->itemData;
-    COLORREF bg, text, muted, sep, hot, border;
-    RECT rc = dis->rcItem;
-    HDC hdc = dis->hDC;
     int selected = (dis->itemState & ODS_SELECTED) != 0;
     int checked = (dis->itemState & ODS_CHECKED) != 0;
     int disabled = (dis->itemState & (ODS_DISABLED | ODS_GRAYED)) != 0;
     int check_col = DABOM_SCALE(app, 22);
-    int pad_right = DABOM_SCALE(app, 14);
-    int sep_inset = DABOM_SCALE(app, 12);
-    HBRUSH br;
-    HFONT oldf;
-    COLORREF label_c, mute_c;
-
-    dabom_menu_colors(app, &bg, &text, &muted, &sep, &hot, &border);
-    (void)border;
-    label_c = disabled ? muted : text;
-    mute_c = muted;
-
-    if (!it || !it->label) {
-        int mid = (rc.top + rc.bottom) / 2;
-        HPEN pen = CreatePen(PS_SOLID, 1, sep);
-        HPEN oldp = (HPEN)SelectObject(hdc, pen);
-        br = CreateSolidBrush(bg);
-        FillRect(hdc, &rc, br);
-        DeleteObject(br);
-        MoveToEx(hdc, rc.left + sep_inset, mid, NULL);
-        LineTo(hdc, rc.right - sep_inset, mid);
-        SelectObject(hdc, oldp);
-        DeleteObject(pen);
-        return;
-    }
-
-    br = CreateSolidBrush(bg);
-    FillRect(hdc, &rc, br);
-    DeleteObject(br);
-
-    if (selected && !disabled) {
-        RECT hr = rc;
-        int rad = DABOM_SCALE(app, 4);
-        HRGN rgn;
-        InflateRect(&hr, -DABOM_SCALE(app, 4), -DABOM_SCALE(app, 1));
-        if (hr.right > hr.left && hr.bottom > hr.top) {
-            rgn = CreateRoundRectRgn(hr.left, hr.top, hr.right + 1, hr.bottom + 1,
-                rad * 2, rad * 2);
-            br = CreateSolidBrush(hot);
-            FillRgn(hdc, rgn, br);
-            DeleteObject(br);
-            DeleteObject(rgn);
-        }
-    }
-
-    oldf = (HFONT)SelectObject(hdc,
-        app->font_ui ? app->font_ui : GetStockObject(DEFAULT_GUI_FONT));
-    SetBkMode(hdc, TRANSPARENT);
-
-    if (checked) {
-        SIZE csz;
-        const wchar_t *mark = L"✓";
-        GetTextExtentPoint32W(hdc, mark, 1, &csz);
-        SetTextColor(hdc, label_c);
-        TextOutW(hdc,
-            rc.left + (check_col - csz.cx) / 2,
-            rc.top + (rc.bottom - rc.top - csz.cy) / 2,
-            mark, 1);
-    }
-
-    {
-        RECT rlab = rc;
-        rlab.left += check_col;
-        rlab.right -= pad_right + (it->submenu ? DABOM_SCALE(app, 12) : 0);
-        SetTextColor(hdc, label_c);
-        DrawTextW(hdc, it->label, -1, &rlab,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-    }
-
-    if (it->submenu) {
-        RECT rch = rc;
-        rch.left = rc.right - DABOM_SCALE(app, 22);
-        rch.right = rc.right - DABOM_SCALE(app, 8);
-        SetTextColor(hdc, mute_c);
-        DrawTextW(hdc, L"›", -1, &rch,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-    } else if (it->shortcut) {
-        RECT rsc = rc;
-        rsc.left += check_col;
-        rsc.right -= pad_right;
-        SetTextColor(hdc, mute_c);
-        DrawTextW(hdc, it->shortcut, -1, &rsc,
-            DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-    }
-    SelectObject(hdc, oldf);
+    dabom_paint_menu_row(app, dis->hDC, &dis->rcItem, it,
+        selected, checked, disabled, check_col);
 }
 
 typedef struct {

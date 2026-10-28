@@ -1,9 +1,17 @@
 # DaBom
 
-**버전 0.0.10** — Windows 네이티브 **C (Win32 + WIC)** 데스크톱 사진 뷰어입니다.  
+**버전 0.0.11** — Windows 네이티브 **C (Win32 + WIC)** 데스크톱 사진 뷰어입니다.  
 이전 Electron/Vite/React 구현은 이 C 앱으로 대체되었습니다.
 
-앱 버전은 `src/dabom.h`의 `DABOM_VERSION`이 단일 기준이며, 창 제목·빈 화면 부제에 `DaBom 0.0.10`로 표시됩니다.
+앱 버전은 `src/dabom.h`의 `DABOM_VERSION`이 단일 기준이며, 창 제목·빈 화면 부제에 `DaBom 0.0.11`로 표시됩니다.
+
+### 0.0.11 포함
+
+- **파일 드롭다운 = 커스텀 `WS_POPUP`** — TrackPopupMenu `#32768` 시스템 크롬 제거
+- Cursor File 메뉴 매칭: `#252526` / `#CCCCCC` / hover `#2A2D2E` · muted 숏컷 · 얇은 구분선
+- 넉넉한 패딩 · `CS_DROPSHADOW` · DWM `ROUNDSMALL` 코너 + 테두리 색
+- 공통 `dabom_paint_menu_row` — 우클릭 OD 메뉴와 페인트 공유 (컨텍스트 TrackPopup 유지)
+- Apps 라이트: 흰 팝업 / 짙은 텍스트
 
 ### 0.0.10 포함
 

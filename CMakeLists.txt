@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(DaBom VERSION 0.0.8 LANGUAGES C RC)
+project(DaBom VERSION 0.0.11 LANGUAGES C RC)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)

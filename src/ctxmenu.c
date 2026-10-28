@@ -303,7 +303,6 @@ void dabom_ctxmenu_theme(AppState *app)
     if (app->menu_sort) SetMenuInfo(app->menu_sort, &mi);
     if (app->menu_img) SetMenuInfo(app->menu_img, &mi);
     if (app->menu_bookmarks) SetMenuInfo(app->menu_bookmarks, &mi);
-    if (app->menu_file) SetMenuInfo(app->menu_file, &mi);
 }
 
 static void check_cmd(HMENU menu, UINT id, int on)

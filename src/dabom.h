@@ -45,8 +45,8 @@
 #pragma comment(lib, "msimg32.lib")
 #endif
 
-#define DABOM_VERSION   "0.0.10"
-#define DABOM_VERSION_W L"0.0.10"
+#define DABOM_VERSION   "0.0.11"
+#define DABOM_VERSION_W L"0.0.11"
 #define DABOM_TITLE_W   L"DaBom " DABOM_VERSION_W
 
 /* Win32 resources (dabom.rc) */
@@ -179,7 +179,7 @@ typedef struct {
 typedef struct {
     HWND hwnd;
     UINT dpi; /* window DPI (96 = 100%); Per-Monitor V2 */
-    /* hmenu unused (no Win32 frame menu); menu_file = TrackPopup 파일 메뉴. */
+    /* hmenu/menu_file unused (no Win32 frame menu; 파일 = custom WS_POPUP). */
     HMENU hmenu, menu_file, menu_ctx, menu_layout, menu_sort, menu_img, menu_bookmarks;
     HBRUSH br_menu;
     HWND status;
@@ -314,6 +314,10 @@ void dabom_set_page_mode(AppState *app, PageMode page);
 void dabom_menu_colors(const AppState *app,
     COLORREF *bg, COLORREF *text, COLORREF *muted,
     COLORREF *sep, COLORREF *hot_bg, COLORREF *border);
+/* Shared Cursor-like row paint (OD menus + custom 파일 WS_POPUP).
+   left_gutter: check column (ctx) or label inset (file, no checks). */
+void dabom_paint_menu_row(AppState *app, HDC hdc, const RECT *rc,
+    const MenuOdItem *it, int selected, int checked, int disabled, int left_gutter);
 void dabom_measure_od_menu(AppState *app, MEASUREITEMSTRUCT *mis);
 void dabom_draw_od_menu(AppState *app, const DRAWITEMSTRUCT *dis);
 BOOL dabom_track_popup_menu(AppState *app, HMENU menu, UINT flags, int x, int y);
