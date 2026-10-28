@@ -78,7 +78,7 @@ static const CtxDef g_img_items[] = {
 static MenuOdItem g_od_pool[128];
 static int g_od_n;
 
-static MenuOdItem *od_alloc(const wchar_t *label, const wchar_t *shortcut)
+static MenuOdItem *od_alloc(const wchar_t *label, const wchar_t *shortcut, int submenu)
 {
     MenuOdItem *it;
     if (g_od_n >= 128)
@@ -86,6 +86,7 @@ static MenuOdItem *od_alloc(const wchar_t *label, const wchar_t *shortcut)
     it = &g_od_pool[g_od_n++];
     it->label = label;
     it->shortcut = shortcut;
+    it->submenu = submenu ? 1 : 0;
     return it;
 }
 
@@ -93,7 +94,7 @@ static void insert_od_item(HMENU menu, UINT pos, UINT id, const wchar_t *label,
     const wchar_t *shortcut, UINT state)
 {
     MENUITEMINFOW mii;
-    MenuOdItem *od = od_alloc(label, shortcut);
+    MenuOdItem *od = od_alloc(label, shortcut, 0);
     ZeroMemory(&mii, sizeof(mii));
     mii.cbSize = sizeof(mii);
     mii.fMask = MIIM_FTYPE | MIIM_ID | MIIM_DATA | MIIM_STATE;
@@ -219,7 +220,7 @@ void dabom_ctxmenu_create(AppState *app)
             mii.fType = MFT_OWNERDRAW;
             mii.wID = ID_CTX_LAYOUT_FIT;
             mii.hSubMenu = app->menu_layout;
-            mii.dwItemData = (ULONG_PTR)od_alloc(L"이미지 배치(D)", NULL);
+            mii.dwItemData = (ULONG_PTR)od_alloc(L"이미지 배치(D)", NULL, 1);
             InsertMenuItemW(menu, (UINT)pos++, TRUE, &mii);
             continue;
         }
@@ -231,7 +232,8 @@ void dabom_ctxmenu_create(AppState *app)
             mii.fType = MFT_OWNERDRAW;
             mii.wID = ID_CTX_IMG_ROTATE;
             mii.hSubMenu = app->menu_img;
-            mii.dwItemData = (ULONG_PTR)od_alloc(L"이미지(I)", L"Alt+I");
+            /* Submenu chevron wins over Alt+I shortcut column. */
+            mii.dwItemData = (ULONG_PTR)od_alloc(L"이미지(I)", NULL, 1);
             InsertMenuItemW(menu, (UINT)pos++, TRUE, &mii);
             continue;
         }
@@ -243,7 +245,7 @@ void dabom_ctxmenu_create(AppState *app)
             mii.fType = MFT_OWNERDRAW;
             mii.wID = ID_CTX_SORT_NAME;
             mii.hSubMenu = app->menu_sort;
-            mii.dwItemData = (ULONG_PTR)od_alloc(L"정렬 방식(S)", L"Alt+S");
+            mii.dwItemData = (ULONG_PTR)od_alloc(L"정렬 방식(S)", NULL, 1);
             InsertMenuItemW(menu, (UINT)pos++, TRUE, &mii);
             continue;
         }
@@ -254,7 +256,7 @@ void dabom_ctxmenu_create(AppState *app)
             mii.fType = MFT_OWNERDRAW;
             mii.wID = ID_CTX_BOOKMARK_JUMP;
             mii.hSubMenu = app->menu_bookmarks;
-            mii.dwItemData = (ULONG_PTR)od_alloc(L"북마크 이동", NULL);
+            mii.dwItemData = (ULONG_PTR)od_alloc(L"북마크 이동", NULL, 1);
             InsertMenuItemW(menu, (UINT)pos++, TRUE, &mii);
             continue;
         }
@@ -358,9 +360,9 @@ void dabom_ctxmenu_popup(AppState *app, int x, int y)
     }
     dabom_ctxmenu_update_checks(app);
 
-    cmd = TrackPopupMenu(app->menu_ctx,
+    cmd = (UINT)dabom_track_popup_menu(app, app->menu_ctx,
         TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
-        x, y, 0, app->hwnd, NULL);
+        x, y);
     if (cmd)
         dabom_handle_ctx_command(app, cmd);
 }

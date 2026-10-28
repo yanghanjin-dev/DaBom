@@ -45,8 +45,8 @@
 #pragma comment(lib, "msimg32.lib")
 #endif
 
-#define DABOM_VERSION   "0.0.9"
-#define DABOM_VERSION_W L"0.0.9"
+#define DABOM_VERSION   "0.0.10"
+#define DABOM_VERSION_W L"0.0.10"
 #define DABOM_TITLE_W   L"DaBom " DABOM_VERSION_W
 
 /* Win32 resources (dabom.rc) */
@@ -247,6 +247,7 @@ typedef struct {
 typedef struct {
     const wchar_t *label;
     const wchar_t *shortcut;
+    int submenu; /* draw › chevron; hide shortcut column */
 } MenuOdItem;
 
 /* image.c */
@@ -315,6 +316,7 @@ void dabom_menu_colors(const AppState *app,
     COLORREF *sep, COLORREF *hot_bg, COLORREF *border);
 void dabom_measure_od_menu(AppState *app, MEASUREITEMSTRUCT *mis);
 void dabom_draw_od_menu(AppState *app, const DRAWITEMSTRUCT *dis);
+BOOL dabom_track_popup_menu(AppState *app, HMENU menu, UINT flags, int x, int y);
 void dabom_get_content_rect(AppState *app, RECT *rc);
 
 /* ctxmenu.c */

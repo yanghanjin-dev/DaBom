@@ -9,6 +9,15 @@
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1
 #define DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 19
 #endif
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+#ifndef DWMWA_BORDER_COLOR
+#define DWMWA_BORDER_COLOR 34
+#endif
+#ifndef DWMWCP_ROUNDSMALL
+#define DWMWCP_ROUNDSMALL 3
+#endif
 
 #ifndef WM_DPICHANGED
 #define WM_DPICHANGED 0x02E0
@@ -1380,12 +1389,12 @@ enum {
 
 /* Lifetime statics — itemData pointers stay valid while menubar exists. */
 static const MenuOdItem g_file_items[] = {
-    { L"폴더 열기",     NULL },
-    { L"파일 열기",     NULL },
-    { L"파일 정보",     L"TAB" },
-    { NULL,             NULL }, /* separator */
-    { L"프로그램 정보", L"F1" },
-    { L"종료",          L"X" },
+    { L"폴더 열기",     NULL,  0 },
+    { L"파일 열기",     NULL,  0 },
+    { L"파일 정보",     L"TAB", 0 },
+    { NULL,             NULL,  0 }, /* separator */
+    { L"프로그램 정보", L"F1", 0 },
+    { L"종료",          L"X",  0 },
 };
 static const UINT g_file_ids[] = {
     ID_MENU_OPEN_FOLDER,
@@ -1407,7 +1416,7 @@ void dabom_menu_colors(const AppState *app,
     COLORREF *sep, COLORREF *hot_bg, COLORREF *border)
 {
     if (app->palette.dark) {
-        /* Cursor Agents dark popup. */
+        /* Cursor Agents File popup: #252526 / #CCCCCC / hover #2A2D2E. */
         *bg     = RGB(0x25, 0x25, 0x26);
         *text   = RGB(0xCC, 0xCC, 0xCC);
         *muted  = RGB(0x89, 0x89, 0x89);
@@ -1415,13 +1424,65 @@ void dabom_menu_colors(const AppState *app,
         *hot_bg = RGB(0x2A, 0x2D, 0x2E);
         *border = RGB(0x45, 0x45, 0x45);
     } else {
+        /* Cursor-like light popup (white, not classic gray). */
         *bg     = RGB(0xFF, 0xFF, 0xFF);
         *text   = RGB(0x33, 0x33, 0x33);
         *muted  = RGB(0x6A, 0x6A, 0x6A);
-        *sep    = RGB(0xE0, 0xE0, 0xE0);
-        *hot_bg = RGB(0xE8, 0xE8, 0xE8);
-        *border = RGB(0xC8, 0xC8, 0xC8);
+        *sep    = RGB(0xE5, 0xE5, 0xE5);
+        *hot_bg = RGB(0xF0, 0xF0, 0xF0);
+        *border = RGB(0xD0, 0xD0, 0xD0);
     }
+}
+
+/* Soft-round #32768 popup chrome while TrackPopupMenu is open (Win11 DWM). */
+static AppState *g_menu_hook_app;
+static HHOOK g_menu_hook;
+
+static BOOL CALLBACK dabom_enum_menu_hwnd(HWND hwnd, LPARAM lParam)
+{
+    wchar_t cls[32];
+    DWORD pref;
+    COLORREF border = (COLORREF)lParam;
+    if (!GetClassNameW(hwnd, cls, (int)(sizeof(cls) / sizeof(cls[0]))))
+        return TRUE;
+    if (wcscmp(cls, L"#32768") != 0)
+        return TRUE;
+    pref = DWMWCP_ROUNDSMALL;
+    DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &pref, sizeof(pref));
+    DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &border, sizeof(border));
+    return TRUE;
+}
+
+static void dabom_style_open_menu_windows(AppState *app)
+{
+    COLORREF bg, text, muted, sep, hot, border;
+    if (!app) return;
+    dabom_menu_colors(app, &bg, &text, &muted, &sep, &hot, &border);
+    EnumThreadWindows(GetCurrentThreadId(), dabom_enum_menu_hwnd, (LPARAM)border);
+}
+
+static LRESULT CALLBACK dabom_menu_msg_filter(int code, WPARAM wParam, LPARAM lParam)
+{
+    if (code == MSGF_MENU && g_menu_hook_app)
+        dabom_style_open_menu_windows(g_menu_hook_app);
+    return CallNextHookEx(g_menu_hook, code, wParam, lParam);
+}
+
+BOOL dabom_track_popup_menu(AppState *app, HMENU menu, UINT flags, int x, int y)
+{
+    BOOL r;
+    if (!app || !menu || !app->hwnd)
+        return FALSE;
+    g_menu_hook_app = app;
+    g_menu_hook = SetWindowsHookExW(WH_MSGFILTER, dabom_menu_msg_filter,
+        NULL, GetCurrentThreadId());
+    r = TrackPopupMenu(menu, flags, x, y, 0, app->hwnd, NULL);
+    if (g_menu_hook) {
+        UnhookWindowsHookEx(g_menu_hook);
+        g_menu_hook = NULL;
+    }
+    g_menu_hook_app = NULL;
+    return r;
 }
 
 static void menu_enable(HMENU menu, UINT id, int on)
@@ -1729,9 +1790,9 @@ static void popup_file_menu(AppState *app, int client_left, int client_bottom)
     pt.x = client_left;
     pt.y = client_bottom;
     ClientToScreen(app->hwnd, &pt);
-    TrackPopupMenu(app->menu_file,
+    dabom_track_popup_menu(app, app->menu_file,
         TPM_LEFTALIGN | TPM_TOPALIGN | TPM_LEFTBUTTON | TPM_RIGHTBUTTON,
-        pt.x, pt.y, 0, app->hwnd, NULL);
+        pt.x, pt.y);
 }
 
 static void dabom_update_menubar(AppState *app)
@@ -1785,14 +1846,16 @@ void dabom_measure_od_menu(AppState *app, MEASUREITEMSTRUCT *mis)
     HDC hdc;
     HFONT oldf;
     SIZE sz;
-    int pad_x = DABOM_SCALE(app, 22);
-    int gap = DABOM_SCALE(app, 28);
+    int check_col = DABOM_SCALE(app, 22);
+    int pad_right = DABOM_SCALE(app, 16);
+    int gap = DABOM_SCALE(app, 36);
     int sc_w = 0;
     int lab_w = 0;
+    int trail = 0;
 
     if (!it) {
         mis->itemWidth = (UINT)DABOM_SCALE(app, 180);
-        mis->itemHeight = (UINT)DABOM_SCALE(app, 28);
+        mis->itemHeight = (UINT)DABOM_SCALE(app, 26);
         return;
     }
     if (!it->label) {
@@ -1806,15 +1869,18 @@ void dabom_measure_od_menu(AppState *app, MEASUREITEMSTRUCT *mis)
         app->font_ui ? app->font_ui : GetStockObject(DEFAULT_GUI_FONT));
     GetTextExtentPoint32W(hdc, it->label, (int)wcslen(it->label), &sz);
     lab_w = sz.cx;
-    if (it->shortcut) {
+    if (it->submenu) {
+        trail = DABOM_SCALE(app, 14);
+    } else if (it->shortcut) {
         GetTextExtentPoint32W(hdc, it->shortcut, (int)wcslen(it->shortcut), &sz);
         sc_w = sz.cx;
+        trail = sc_w;
     }
     SelectObject(hdc, oldf);
     ReleaseDC(app->hwnd, hdc);
 
-    mis->itemWidth = (UINT)(pad_x + lab_w + (sc_w ? gap + sc_w : 0) + DABOM_SCALE(app, 14));
-    mis->itemHeight = (UINT)DABOM_SCALE(app, 28);
+    mis->itemWidth = (UINT)(check_col + lab_w + (trail ? gap + trail : 0) + pad_right);
+    mis->itemHeight = (UINT)DABOM_SCALE(app, 26);
 }
 
 void dabom_draw_od_menu(AppState *app, const DRAWITEMSTRUCT *dis)
@@ -1825,11 +1891,18 @@ void dabom_draw_od_menu(AppState *app, const DRAWITEMSTRUCT *dis)
     HDC hdc = dis->hDC;
     int selected = (dis->itemState & ODS_SELECTED) != 0;
     int checked = (dis->itemState & ODS_CHECKED) != 0;
+    int disabled = (dis->itemState & (ODS_DISABLED | ODS_GRAYED)) != 0;
+    int check_col = DABOM_SCALE(app, 22);
+    int pad_right = DABOM_SCALE(app, 14);
+    int sep_inset = DABOM_SCALE(app, 12);
     HBRUSH br;
     HFONT oldf;
+    COLORREF label_c, mute_c;
 
     dabom_menu_colors(app, &bg, &text, &muted, &sep, &hot, &border);
     (void)border;
+    label_c = disabled ? muted : text;
+    mute_c = muted;
 
     if (!it || !it->label) {
         int mid = (rc.top + rc.bottom) / 2;
@@ -1838,37 +1911,68 @@ void dabom_draw_od_menu(AppState *app, const DRAWITEMSTRUCT *dis)
         br = CreateSolidBrush(bg);
         FillRect(hdc, &rc, br);
         DeleteObject(br);
-        MoveToEx(hdc, rc.left + 10, mid, NULL);
-        LineTo(hdc, rc.right - 10, mid);
+        MoveToEx(hdc, rc.left + sep_inset, mid, NULL);
+        LineTo(hdc, rc.right - sep_inset, mid);
         SelectObject(hdc, oldp);
         DeleteObject(pen);
         return;
     }
 
-    br = CreateSolidBrush(selected ? hot : bg);
+    br = CreateSolidBrush(bg);
     FillRect(hdc, &rc, br);
     DeleteObject(br);
+
+    if (selected && !disabled) {
+        RECT hr = rc;
+        int rad = DABOM_SCALE(app, 4);
+        HRGN rgn;
+        InflateRect(&hr, -DABOM_SCALE(app, 4), -DABOM_SCALE(app, 1));
+        if (hr.right > hr.left && hr.bottom > hr.top) {
+            rgn = CreateRoundRectRgn(hr.left, hr.top, hr.right + 1, hr.bottom + 1,
+                rad * 2, rad * 2);
+            br = CreateSolidBrush(hot);
+            FillRgn(hdc, rgn, br);
+            DeleteObject(br);
+            DeleteObject(rgn);
+        }
+    }
 
     oldf = (HFONT)SelectObject(hdc,
         app->font_ui ? app->font_ui : GetStockObject(DEFAULT_GUI_FONT));
     SetBkMode(hdc, TRANSPARENT);
+
     if (checked) {
-        SetTextColor(hdc, app->palette.accent);
-        TextOutW(hdc, rc.left + 6, rc.top + (rc.bottom - rc.top - 12) / 2, L"✓", 1);
+        SIZE csz;
+        const wchar_t *mark = L"✓";
+        GetTextExtentPoint32W(hdc, mark, 1, &csz);
+        SetTextColor(hdc, label_c);
+        TextOutW(hdc,
+            rc.left + (check_col - csz.cx) / 2,
+            rc.top + (rc.bottom - rc.top - csz.cy) / 2,
+            mark, 1);
     }
-    SetTextColor(hdc, text);
+
     {
         RECT rlab = rc;
-        rlab.left += DABOM_SCALE(app, 22);
-        rlab.right -= DABOM_SCALE(app, 14);
+        rlab.left += check_col;
+        rlab.right -= pad_right + (it->submenu ? DABOM_SCALE(app, 12) : 0);
+        SetTextColor(hdc, label_c);
         DrawTextW(hdc, it->label, -1, &rlab,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     }
-    if (it->shortcut) {
+
+    if (it->submenu) {
+        RECT rch = rc;
+        rch.left = rc.right - DABOM_SCALE(app, 22);
+        rch.right = rc.right - DABOM_SCALE(app, 8);
+        SetTextColor(hdc, mute_c);
+        DrawTextW(hdc, L"›", -1, &rch,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    } else if (it->shortcut) {
         RECT rsc = rc;
-        rsc.left += DABOM_SCALE(app, 22);
-        rsc.right -= DABOM_SCALE(app, 14);
-        SetTextColor(hdc, muted);
+        rsc.left += check_col;
+        rsc.right -= pad_right;
+        SetTextColor(hdc, mute_c);
         DrawTextW(hdc, it->shortcut, -1, &rsc,
             DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     }
