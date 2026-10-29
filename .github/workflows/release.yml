@@ -1,0 +1,58 @@
+name: Windows Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate version and extract release notes
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid VERSION' }
+          if ($env:GITHUB_REF -ne "refs/tags/v$version") { throw 'Run this workflow against the matching version tag.' }
+          $header = Get-Content src/dabom.h -Raw
+          foreach ($pattern in @('#define DABOM_VERSION\s+"{0}"', '#define DABOM_VERSION_W\s+L"{0}"')) {
+            if ($header -notmatch ($pattern -f [regex]::Escape($version))) { throw 'Header version mismatch' }
+          }
+          if ((Get-Content CMakeLists.txt -Raw) -notmatch ('project\(DaBom VERSION ' + [regex]::Escape($version) + ' LANGUAGES')) { throw 'CMake version mismatch' }
+          $changelog = Get-Content CHANGELOG.md -Raw
+          $entry = [regex]::Match($changelog, '(?ms)^## \[' + [regex]::Escape($version) + '\][^\r\n]*\r?\n(.*?)(?=^## \[|\z)')
+          if (-not $entry.Success) { throw 'Missing changelog entry' }
+          $entry.Groups[1].Value.Trim() | Set-Content release-notes.md -Encoding utf8
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+      - name: Configure
+        run: cmake -S . -B build-release -A x64
+      - name: Build
+        run: cmake --build build-release --config Release
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist, package | Out-Null
+          Copy-Item build-release/Release/dabom.exe dist/dabom.exe
+          Copy-Item dist/dabom.exe, README.md, CHANGELOG.md package/
+          Compress-Archive -Path package/* -DestinationPath "dist/DaBom-$env:RELEASE_VERSION-windows-x64.zip"
+          Get-ChildItem dist -File | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          } | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$env:RELEASE_VERSION" dist/* --verify-tag --title "DaBom $env:RELEASE_VERSION" --notes-file release-notes.md
+          if ($LASTEXITCODE -ne 0) { throw 'Release creation failed' }

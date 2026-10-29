@@ -3,6 +3,15 @@
 **버전 0.0.11** — Windows 네이티브 **C (Win32 + WIC)** 데스크톱 사진 뷰어입니다.  
 이전 Electron/Vite/React 구현은 이 C 앱으로 대체되었습니다.
 
+## 다운로드 및 버전 관리
+
+Windows x64 실행 파일과 포터블 ZIP은 [GitHub Releases](https://github.com/yanghanjin-dev/DaBom/releases)에서 받습니다.
+변경 이력은 [CHANGELOG.md](CHANGELOG.md)에 기록합니다.
+
+기능 개선·버그 수정 시 앱 버전과 변경 이력을 함께 갱신합니다. 버전 표기는 `src/dabom.h`, `VERSION`, `CMakeLists.txt`, README에서 동일하게 유지합니다.
+빌드 확인 후 변경을 push하고 `v0.0.12` 형식의 새 태그를 push하면 GitHub Actions가 Windows x64 빌드와 Release 등록을 수행합니다.
+Release에는 `dabom.exe`, 포터블 ZIP, `SHA256SUMS.txt`가 첨부됩니다. 공개된 버전은 덮어쓰지 않고 새 버전으로 배포합니다.
+
 앱 버전은 `src/dabom.h`의 `DABOM_VERSION`이 단일 기준이며, 창 제목·빈 화면 부제에 `DaBom 0.0.11`로 표시됩니다.
 
 ### 0.0.11 포함
