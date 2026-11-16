@@ -45,8 +45,8 @@
 #pragma comment(lib, "msimg32.lib")
 #endif
 
-#define DABOM_VERSION   "0.0.11"
-#define DABOM_VERSION_W L"0.0.11"
+#define DABOM_VERSION   "0.0.12"
+#define DABOM_VERSION_W L"0.0.12"
 #define DABOM_TITLE_W   L"DaBom " DABOM_VERSION_W
 
 /* Win32 resources (dabom.rc) */
@@ -87,6 +87,8 @@ enum {
     ID_MENU_FILE_INFO,
     ID_MENU_ABOUT,
     ID_MENU_EXIT,
+    ID_MENU_INSTALL,
+    ID_MENU_UNINSTALL,
     /* Context — view / edit (ref 1) */
     ID_CTX_FULLSCREEN = 1201,
     ID_CTX_CONTINUOUS,
@@ -249,6 +251,10 @@ typedef struct {
     const wchar_t *shortcut;
     int submenu; /* draw › chevron; hide shortcut column */
 } MenuOdItem;
+
+/* install.c */
+int dabom_install_command(void);
+void dabom_install_request(HWND owner, BOOL remove);
 
 /* image.c */
 int dabom_wic_init(AppState *app);

@@ -1,6 +1,6 @@
 # DaBom
 
-**버전 0.0.11** — Windows 네이티브 **C (Win32 + WIC)** 데스크톱 사진 뷰어입니다.  
+**버전 0.0.12** — Windows 네이티브 **C (Win32 + WIC)** 데스크톱 사진 뷰어입니다.
 이전 Electron/Vite/React 구현은 이 C 앱으로 대체되었습니다.
 
 ## 다운로드 및 버전 관리
@@ -12,7 +12,13 @@ Windows x64 실행 파일과 포터블 ZIP은 [GitHub Releases](https://github.c
 빌드 확인 후 변경을 push하고 `v0.0.12` 형식의 새 태그를 push하면 GitHub Actions가 Windows x64 빌드와 Release 등록을 수행합니다.
 Release에는 `dabom.exe`, 포터블 ZIP, `SHA256SUMS.txt`가 첨부됩니다. 공개된 버전은 덮어쓰지 않고 새 버전으로 배포합니다.
 
-앱 버전은 `src/dabom.h`의 `DABOM_VERSION`이 단일 기준이며, 창 제목·빈 화면 부제에 `DaBom 0.0.11`로 표시됩니다.
+앱 버전은 `src/dabom.h`의 `DABOM_VERSION`이 단일 기준이며, 창 제목·빈 화면 부제에 `DaBom 0.0.12`로 표시됩니다.
+
+### 설치 및 제거
+
+- 파일 메뉴의 **설치 (관리자 권한)** 또는 `dabom.exe --install`: UAC 승인 후 Program Files\DaBom에 설치하고 공용 시작 메뉴와 Windows 설치된 앱 목록에 등록합니다.
+- 파일 메뉴의 **제거 (관리자 권한)**, Windows 설치된 앱의 제거 또는 `dabom.exe --uninstall`: UAC 승인과 확인 후 앱과 바로가기를 제거합니다. 실행 중인 다른 DaBom 창을 먼저 닫아 주세요.
+- 사진과 `%APPDATA%\DaBom` 개인 설정은 보존합니다. 포터블 실행도 계속 지원합니다. 제거용 임시 파일은 다음 Windows 재시작 시 정리합니다.
 
 ### 0.0.11 포함
 

@@ -6,6 +6,13 @@
     name="DaBom.PhotoViewer"
     type="win32"/>
   <description>DaBom Photo Viewer</description>
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
   <dependency>
     <dependentAssembly>
       <assemblyIdentity

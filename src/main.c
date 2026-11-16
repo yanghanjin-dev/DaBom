@@ -1,4 +1,4 @@
-﻿#include "dabom.h"
+#include "dabom.h"
 #include <dwmapi.h>
 #include <uxtheme.h>
 
@@ -1384,6 +1384,8 @@ static const MenuOdItem g_file_items[] = {
     { L"파일 열기",     NULL,  0 },
     { L"파일 정보",     L"TAB", 0 },
     { NULL,             NULL,  0 }, /* separator */
+    { L"설치 (관리자 권한)...", NULL, 0 },
+    { L"제거 (관리자 권한)...", NULL, 0 },
     { L"프로그램 정보", L"F1", 0 },
     { L"종료",          L"X",  0 },
 };
@@ -1392,6 +1394,8 @@ static const UINT g_file_ids[] = {
     ID_MENU_OPEN_FILES,
     ID_MENU_FILE_INFO,
     FILE_MENU_SEP_ID,
+    ID_MENU_INSTALL,
+    ID_MENU_UNINSTALL,
     ID_MENU_ABOUT,
     ID_MENU_EXIT,
 };
@@ -2555,6 +2559,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         case ID_MENU_OPEN_FOLDER: dabom_open_folder_dialog(app); break;
         case ID_MENU_OPEN_FILES:  dabom_open_files_dialog(app); break;
         case ID_MENU_FILE_INFO:   show_file_info(app); break;
+        case ID_MENU_INSTALL:     dabom_install_request(hwnd, FALSE); break;
+        case ID_MENU_UNINSTALL:   dabom_install_request(hwnd, TRUE); break;
         case ID_MENU_ABOUT:       show_about(app); break;
         case ID_MENU_EXIT:        DestroyWindow(hwnd); break;
         case ID_BTN_PREV:   dabom_next(app, -1); break;
@@ -3049,12 +3055,15 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmd, int show)
     MSG msg;
     INITCOMMONCONTROLSEX icc;
     int win_w, win_h;
+    int install_result;
 
     (void)hPrev;
     (void)cmd;
 
     /* Must run before any HWND / dialog so common file dialogs stay sharp. */
     dabom_set_dpi_awareness();
+    install_result = dabom_install_command();
+    if (install_result >= 0) return install_result;
 
     ZeroMemory(&g_app, sizeof(g_app));
     g_app.dpi = dabom_get_dpi(NULL);
